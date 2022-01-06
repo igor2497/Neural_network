@@ -13,6 +13,9 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="training_environment">
+      <UniqueIdentifier>{a130b142-c33b-47e9-af8b-c5983c7e60b2}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -24,12 +27,24 @@
     <ClCompile Include="matrix.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="stick_balancing.cpp">
+      <Filter>training_environment</Filter>
+    </ClCompile>
+    <ClCompile Include="quaternion.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="nn.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="matrix.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="stick_balancing.h">
+      <Filter>training_environment</Filter>
+    </ClInclude>
+    <ClInclude Include="quaternion.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

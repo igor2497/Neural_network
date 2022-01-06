@@ -14,7 +14,6 @@ public:
 
 	Matrix();
 	Matrix(int, int, bool);
-	//~Matrix();
 	void clean();
 	double getel(int, int);
 	void setel(int, int, double);

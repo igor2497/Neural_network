@@ -20,10 +20,6 @@ Matrix::Matrix(int _row, int _col, bool _randomize)
 		}
 	}
 }
-/*
-Matrix::~Matrix() {
-	free (matrix);
-}*/
 
 double Matrix::getel(int i, int j) {
 	return *(matrix + i*col + j);
