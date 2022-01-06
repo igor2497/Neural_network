@@ -113,10 +113,14 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="matrix.cpp" />
     <ClCompile Include="nn.cpp" />
+    <ClCompile Include="quaternion.cpp" />
+    <ClCompile Include="stick_balancing.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="matrix.h" />
     <ClInclude Include="nn.h" />
+    <ClInclude Include="quaternion.h" />
+    <ClInclude Include="stick_balancing.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
