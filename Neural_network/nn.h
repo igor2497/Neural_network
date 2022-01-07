@@ -33,4 +33,6 @@ public:
 	Matrix calculate(Matrix);
 	void randomize(int mutation);
 	void copy(Neural_network);
+	void save(char *fileName);
+	void load(char *fileName);
 };

@@ -1,10 +1,9 @@
 #include"nn.h"
+#include<fstream>
 
-Neural_network::Neural_network()
-	: layers(0), il(0), hl1(0), hl2(0), hl3(0), ol(0)
-{
+using namespace std;
 
-}
+Neural_network::Neural_network() : layers(0), il(0), hl1(0), hl2(0), hl3(0), ol(0) {}
 
 Neural_network::Neural_network(int _il, int _hl1, int _hl2, int _ol)
 	: layers(2), il(_il), hl1(_hl1), hl2(_hl2), hl3(0), ol(_ol)
@@ -175,4 +174,17 @@ void Neural_network::copy(Neural_network a) {
 		b1->setmat(*(a.b1));
 		ob->setmat(*(a.ob));
 	}
+}
+
+void Neural_network::save(char *fileName) {
+	ofstream saveFile;
+	remove(fileName);
+	saveFile.open(fileName);
+
+	saveFile << layers << endl;
+	saveFile << il << endl;
+	saveFile << hl1 << endl;
+	saveFile << hl2 << endl;
+	saveFile << hl3 << endl;
+	saveFile << ol << endl;
 }
