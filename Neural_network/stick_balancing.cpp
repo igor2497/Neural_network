@@ -48,8 +48,8 @@ void Stick::physics(double force[eulerCount], double time_step) {
 	velocity[eulerZ] += force[eulerZ] / mass * time_step;
 
 	// Update the object angular velocity (none of the forces have a lever on Y axis, therefore it is not calculated)
-	angularV[eulerX] -= forceQ.z * massVector.y * time_step / inertia;
-	angularV[eulerZ] += forceQ.x * massVector.y * time_step / inertia;
+	angularV[eulerX] -= forceQ.z * massVector.y * time_step / inertia * 2 * M_PI;
+	angularV[eulerZ] += forceQ.x * massVector.y * time_step / inertia * 2 * M_PI;
 
 	// Update position and rotation quaternion for every axis
 	for (i = 0u; i < eulerCount; i++) {

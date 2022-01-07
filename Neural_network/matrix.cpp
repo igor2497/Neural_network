@@ -47,6 +47,14 @@ void Matrix::print() {
 	std::cout << std::endl;
 }
 
+void Matrix::randomize(int mutation) {
+	for (int i = 0; i < row*col; i++) {
+		if (rand() % 1000 < mutation) {
+			matrix[i] = (double)rand() / RAND_MAX * 2 - 1;
+		}
+	}
+}
+
 void mul(Matrix mat1, Matrix mat2, Matrix *res) {
 	int i, j, k;
 	for (i = 0; i < res->row; i++) {
@@ -97,14 +105,6 @@ void relu(Matrix *a) {
 void sigm(Matrix *a) {
 	for (int i = 0; i < a->row*a->col; i++) {
 		a->matrix[i] = 1 / (1 + exp(-a->matrix[i]));
-	}
-}
-
-void Matrix::randomize(int mutation) {
-	for (int i = 0; i < row*col; i++) {
-		if (rand() % 1000 < mutation) {
-			matrix[i] = (double)rand() / RAND_MAX * 2 - 1;
-		}
 	}
 }
 
