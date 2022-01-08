@@ -23,5 +23,5 @@ public:
 		  Quaternion _rotation,
 		  double _velocity[eulerCount],
 		  double _angular_v[eulerCount]);
-	void physics(double force[eulerCount], double time_step);
+	void physics(double force1[eulerCount], double force2[eulerCount], double time_step);
 };

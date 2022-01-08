@@ -33,23 +33,25 @@ Stick::Stick(double _mass,
  * Function takes in the forces applied to the object and time step, and calculates the new object position and
  * and rotation.
  ******************************************************************************************************************/
-void Stick::physics(double force[eulerCount], double time_step) {
+void Stick::physics(double force1[eulerCount], double force2[eulerCount], double time_step) {
 	unsigned int i;
 	float deltaRotation[eulerCount];
 	Quaternion rotationQ[eulerCount];
-	Quaternion forceQ(force[eulerX], force[eulerY], force[eulerZ], 0);
+	Quaternion forceQ1(force1[eulerX], force1[eulerY], force1[eulerZ], 0);
+	Quaternion forceQ2(force2[eulerX], force2[eulerY], force2[eulerZ], 0);
 
-	// Rotate the force in opposite diraction of the object
-	forceQ = forceQ.rotate(rotation.conjugate());
+	// Rotate the force in opposite direction of the object
+	forceQ1 = forceQ1.rotate(rotation.conjugate());
+	forceQ2 = forceQ2.rotate(rotation.conjugate());
 
 	// Update the object velocity
-	velocity[eulerX] += force[eulerX] / mass * time_step;
-	velocity[eulerY] += (force[eulerY] - mass * g) / mass * time_step;
-	velocity[eulerZ] += force[eulerZ] / mass * time_step;
+	velocity[eulerX] += (force1[eulerX] + force2[eulerX]) / mass * time_step;
+	velocity[eulerY] += (force1[eulerY] + force2[eulerY] - mass * g) / mass * time_step;
+	velocity[eulerZ] += (force1[eulerZ] + force2[eulerZ]) / mass * time_step;
 
 	// Update the object angular velocity (none of the forces have a lever on Y axis, therefore it is not calculated)
-	angularV[eulerX] -= forceQ.z * massVector.y * time_step / inertia * 2 * M_PI;
-	angularV[eulerZ] += forceQ.x * massVector.y * time_step / inertia * 2 * M_PI;
+	angularV[eulerX] -= (forceQ1.z - forceQ2.z) * massVector.y * time_step / inertia * 2 * M_PI;
+	angularV[eulerZ] += (forceQ1.x - forceQ2.x) * massVector.y * time_step / inertia * 2 * M_PI;
 
 	// Update position and rotation quaternion for every axis
 	for (i = 0u; i < eulerCount; i++) {
