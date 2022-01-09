@@ -20,22 +20,25 @@
 #define next_gen 			16						//!< number of best cars that will be used to create next generation
 #define roulette_size 		2000					//!< size of an array to bias the better cars for selection in new generation
 
-#define PENDULUM_MASS		1						//!< Pendulum mass in kg
+#define PENDULUM_MASS		1						//!< Bottom pendulum mass in kg
+#define PENDULUM2_MASS		1						//!< Top pendulum mass in kg
 #define PENDULUM_HEIGHT		1						//!< Pendulum height in meters
 #define PENDULUM_Y_POS		0.5						//!< Pendulum mass center height
-#define PENDULUM_X_ANGLE	0.1						//!< Arbitrary angle around X axis
-#define PENDULUM_Z_ANGLE	0.1						//!< Arbitrary angle around Z axis
+#define PENDULUM_X_ANGLE	0.03					//!< Arbitrary angle around X axis
+#define PENDULUM_Z_ANGLE	0.03					//!< Arbitrary angle around Z axis
 
-#define TIME_STEP			0.01					//!< Simulation time step in seconds
-#define DURATION			60						//!< Simulation duration in seconds
+#define TIME_STEP			0.005					//!< Simulation time step in seconds
+#define DURATION			10						//!< Simulation duration in seconds
 #define ITERATIONS			DURATION / TIME_STEP	//!< Number of iterations in simulation
 
-#define FORCE_CLIPOFF		3						//!< Maximum force that can be applied to an object (times its weigth)
+#define FORCE_CLIPOFF		40						//!< Maximum force that can be applied to an object (times its weigth)
 #define SIM_TIMEOUT			ITERATIONS				//!< Maximum time that simulation will run
 
 #define BOX_SIDES			1						//!< Box sides size for training environment
 
-#define FIXED_POINT_TEST	0						//!< If set to 1, stick will freely rotate around a fixed point
+#define FIXED_POINT_TEST	1						//!< If set to 1, stick will freely rotate around a fixed point
+
+#define NUM_OF_BODIES		2						//!< Number of bodies that the force applies to
 
 #if population < next_gen
 #error next generation can not be greater than population
@@ -51,17 +54,29 @@ void main() {
 	volatile int current_rank = 0;
 	float axisVector[eulerCount] = { -1, 1, -1 };
 	Quaternion pendulumQ(PENDULUM_X_ANGLE, 0, PENDULUM_Z_ANGLE, 1);
+	Quaternion pendulumQ2(0, 0, 0, 1);
 	double pSize[eulerCount] = { 0.1, PENDULUM_HEIGHT, 0.1 };
 	double pPosition[eulerCount] = { 0, PENDULUM_Y_POS, 0 };
 	double pVelocity[eulerCount] = { 0, 0, 0 };
 	double pAngularV[eulerCount] = { 0, 0, 0 };
+	double pSize2[eulerCount] = { 0.1, PENDULUM_HEIGHT, 0.1 };
+	double pPosition2[eulerCount] = { 0, PENDULUM_Y_POS, 0 };
+	double pVelocity2[eulerCount] = { 0, 0, 0 };
+	double pAngularV2[eulerCount] = { 0, 0, 0 };
 	double pForce[eulerCount] = { 0, 0, 0 };
+	double jointForce[eulerCount] = { 0, 0, 0 };
+	double zeroForce[eulerCount] = { 0, 0, 0 };
 	double best[next_gen], roulette_sum = 0, roulette_odds[next_gen];
 	bool pass = false;
+	double pointVelocity[eulerCount];
+	Quaternion tempVel(0, 0, 0, 0);
+	Quaternion tempVel2(0, 0, 0, 0);
 
 	char *unityRotation = "C:/repo/unity/inverted pendulum/Assets/angles.txt";
 	char *unityPosition = "C:/repo/unity/inverted pendulum/Assets/position.txt";
-	ofstream qFile, pFile;
+	char *unityRotation2 = "C:/repo/unity/inverted pendulum/Assets/angles2.txt";
+	char *unityPosition2 = "C:/repo/unity/inverted pendulum/Assets/position2.txt";
+	ofstream qFile, pFile, qFile2, pFile2;
 
 	Neural_network *nn[population], *temp_nn[population], *best_nn;
 	thread multi_thread[population];
@@ -85,7 +100,7 @@ void main() {
 #endif
 	}
 
-	// calculate odds for each car to get mixed in new generation
+	// calculate odds for each neural network to get mixed in new generation
 	for (i = 0; i < next_gen; i++) {
 		roulette_sum += 1.0 / ((double)i + 2.0);
 		roulette_odds[i] = roulette_sum;
@@ -110,10 +125,21 @@ void main() {
 		pVelocity,
 		pAngularV);
 
+	Stick pendulum2(PENDULUM2_MASS,
+		pSize2,
+		pPosition2,
+		pendulumQ2,
+		pVelocity2,
+		pAngularV2);
+
 	// adjust pendulum position
 	pendulum.position[eulerX] = pendulum.massVector.rotate(pendulum.rotation).x;
 	pendulum.position[eulerY] = pendulum.massVector.rotate(pendulum.rotation).y;
 	pendulum.position[eulerZ] = pendulum.massVector.rotate(pendulum.rotation).z;
+
+	pendulum2.position[eulerX] = pendulum.massVector.rotate(pendulum.rotation).x * 2;
+	pendulum2.position[eulerY] = pendulum.massVector.rotate(pendulum.rotation).y * 2 + pendulum2.massVector.y;
+	pendulum2.position[eulerZ] = pendulum.massVector.rotate(pendulum.rotation).z * 2;
 
 #if FIXED_POINT_TEST == 0
 	// run 1000 generations of the neural networks
@@ -319,12 +345,17 @@ void main() {
 	qFile.open(unityRotation);
 	remove(unityPosition);
 	pFile.open(unityPosition);
+
+	remove(unityRotation2);
+	qFile2.open(unityRotation2);
+	remove(unityPosition2);
+	pFile2.open(unityPosition2);
 	
 	for (i = 0; i < ITERATIONS; i++) {
 		// calculate the force required to keep the base of the stick fixed
-		pForce[eulerY] = -((pendulum.massVector.conjugate().rotate(pendulum.rotation)).y + pendulum.position[eulerY]) * pendulum.mass / TIME_STEP / TIME_STEP;
-		pForce[eulerX] = -((pendulum.massVector.conjugate().rotate(pendulum.rotation)).x + pendulum.position[eulerX]) * pendulum.mass / TIME_STEP / TIME_STEP;
-		pForce[eulerZ] = -((pendulum.massVector.conjugate().rotate(pendulum.rotation)).z + pendulum.position[eulerZ]) * pendulum.mass / TIME_STEP / TIME_STEP;
+		pForce[eulerY] = -((pendulum.massVector.conjugate().rotate(pendulum.rotation)).y + pendulum.position[eulerY]) / TIME_STEP / TIME_STEP * pendulum.mass;
+		pForce[eulerX] = -((pendulum.massVector.conjugate().rotate(pendulum.rotation)).x + pendulum.position[eulerX]) / TIME_STEP / TIME_STEP * pendulum.mass;
+		pForce[eulerZ] = -((pendulum.massVector.conjugate().rotate(pendulum.rotation)).z + pendulum.position[eulerZ]) / TIME_STEP / TIME_STEP * pendulum.mass;
 
 		// reduce the force if it is to big
 		if (pForce[eulerY] < -pendulum.mass * g * FORCE_CLIPOFF) {
@@ -348,8 +379,51 @@ void main() {
 			pForce[eulerZ] = -pendulum.mass * g * FORCE_CLIPOFF;
 		}
 
-		pendulum.physics(pForce, TIME_STEP);
-		// Write the stick parameters to file
+		// joint force
+		jointForce[eulerY] = (((pendulum.massVector.rotate(pendulum.rotation)).y + pendulum.position[eulerY]) -
+							  ((pendulum2.massVector.conjugate().rotate(pendulum2.rotation)).y + pendulum2.position[eulerY]))
+								/ TIME_STEP / TIME_STEP * pendulum.mass / NUM_OF_BODIES;
+		jointForce[eulerX] = (((pendulum.massVector.rotate(pendulum.rotation)).x + pendulum.position[eulerX]) -
+							  ((pendulum2.massVector.conjugate().rotate(pendulum2.rotation)).x + pendulum2.position[eulerX]))
+								/ TIME_STEP / TIME_STEP * pendulum.mass / NUM_OF_BODIES;
+		jointForce[eulerZ] = (((pendulum.massVector.rotate(pendulum.rotation)).z + pendulum.position[eulerZ]) -
+							  ((pendulum2.massVector.conjugate().rotate(pendulum2.rotation)).z + pendulum2.position[eulerZ]))
+								/ TIME_STEP / TIME_STEP * pendulum.mass / NUM_OF_BODIES;
+
+		// reduce the force if it is to big
+		if (jointForce[eulerY] < -pendulum.mass * g * FORCE_CLIPOFF) {
+			jointForce[eulerY] = -pendulum.mass * g * FORCE_CLIPOFF;
+		}
+		if (jointForce[eulerY] > pendulum.mass * g * FORCE_CLIPOFF) {
+			jointForce[eulerY] = pendulum.mass * g * FORCE_CLIPOFF;
+		}
+
+		if (jointForce[eulerX] > pendulum.mass * g * FORCE_CLIPOFF) {
+			jointForce[eulerX] = pendulum.mass * g * FORCE_CLIPOFF;
+		}
+		if (jointForce[eulerX] < -pendulum.mass * g * FORCE_CLIPOFF) {
+			jointForce[eulerX] = -pendulum.mass * g * FORCE_CLIPOFF;
+		}
+
+		if (jointForce[eulerZ] > pendulum.mass * g * FORCE_CLIPOFF) {
+			jointForce[eulerZ] = pendulum.mass * g * FORCE_CLIPOFF;
+		}
+		if (jointForce[eulerZ] < -pendulum.mass * g * FORCE_CLIPOFF) {
+			jointForce[eulerZ] = -pendulum.mass * g * FORCE_CLIPOFF;
+		}
+
+		// calculate the new parameters for top pendulum
+		pendulum2.physics(jointForce, zeroForce, TIME_STEP);
+
+		// flip the force for bottom pendulum because it has opposite reaction from top one
+		jointForce[eulerX] = -jointForce[eulerX];
+		jointForce[eulerY] = -jointForce[eulerY];
+		jointForce[eulerZ] = -jointForce[eulerZ];
+
+		// calculate the new parameters for bottom pendulum
+		pendulum.physics(pForce, jointForce, TIME_STEP);
+
+		// Write the bottom pendulum parameters to file
 		qFile << pendulum.rotation.x;
 		qFile << "\n";
 		qFile << pendulum.rotation.y;
@@ -365,6 +439,23 @@ void main() {
 		pFile << "\n";
 		pFile << pendulum.position[eulerZ];
 		pFile << "\n";
+
+		// Write the top pendulum parameters to file
+		qFile2 << pendulum2.rotation.x;
+		qFile2 << "\n";
+		qFile2 << pendulum2.rotation.y;
+		qFile2 << "\n";
+		qFile2 << pendulum2.rotation.z;
+		qFile2 << "\n";
+		qFile2 << pendulum2.rotation.w;
+		qFile2 << "\n";
+
+		pFile2 << pendulum2.position[eulerX];
+		pFile2 << "\n";
+		pFile2 << pendulum2.position[eulerY];
+		pFile2 << "\n";
+		pFile2 << pendulum2.position[eulerZ];
+		pFile2 << "\n";
 
 	}
 	#endif // #elif FIXED_POINT_TEST == 1
@@ -383,6 +474,7 @@ void stick_thread(Neural_network *_nn, Stick pendulum, unsigned int *result, boo
 	char *unityPosition = "C:/repo/unity/inverted pendulum/Assets/position.txt";
 	ofstream qFile, pFile;
 	float eulerRotation[eulerCount];
+	double zeroForce[eulerCount] = { 0, 0, 0 };
 
 	// initialize the result
 	*result = 0;
@@ -425,7 +517,7 @@ void stick_thread(Neural_network *_nn, Stick pendulum, unsigned int *result, boo
 		}
 
 		// calculate the stick physics
-		pendulum.physics(pForce, TIME_STEP);
+		pendulum.physics(pForce, zeroForce, TIME_STEP);
 
 		// if the run is being recorded
 		if (should_save_best) {
