@@ -1,14 +1,15 @@
 #pragma once
 #include"matrix.h"
+#include"error.h"
 
 class Neural_network {
 public:
-	const int layers;
-	const int il;
-	const int hl1;
-	const int hl2;
-	const int hl3;
-	const int ol;
+	int layers;
+	int il;
+	int hl1;
+	int hl2;
+	int hl3;
+	int ol;
 
 	Matrix *ih1;
 	Matrix *h12;
@@ -29,10 +30,11 @@ public:
 	Neural_network(int, int, int, int, int);
 	Neural_network(int, int, int, int);
 	Neural_network(int, int, int);
+    Neural_network(const char *fileName);
 	void clean();
 	Matrix calculate(Matrix);
 	void randomize(int mutation);
 	void copy(Neural_network);
-	void save(char *fileName);
-	void load(char *fileName);
+	void save(const char *fileName, ERR_E *err);
+	void load(const char *fileName, ERR_E *err);
 };
