@@ -1,0 +1,4 @@
+[submodule "Neural_network/imgui"]
+	path = Neural_network/imgui
+	url = https://github.com/ocornut/imgui.git
+	branch = docking

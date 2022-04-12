@@ -48,7 +48,7 @@ void Stick::physics(double force1[eulerCount], double force2[eulerCount], double
 
     // Update the object velocity
     velocity[eulerX] += (force1[eulerX] + force2[eulerX]) / mass * time_step;
-    velocity[eulerY] += (force1[eulerY] + force2[eulerY] - mass * g) / mass * time_step;
+    velocity[eulerY] += (force1[eulerY] + force2[eulerY] - mass * gravity) / mass * time_step;
     velocity[eulerZ] += (force1[eulerZ] + force2[eulerZ]) / mass * time_step;
 
     // Update the object angular velocity (none of the forces have a lever on Y axis, therefore it is not calculated)

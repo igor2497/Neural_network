@@ -2,7 +2,7 @@
 #include"quaternion.h"
 
 #define STICK_INERTIA_COEF	12
-#define g	9.81	//!< earth gravitational constant
+#define gravity	9.81	//!< earth gravitational constant
 
 extern euler_E;
 
