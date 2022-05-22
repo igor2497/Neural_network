@@ -1,3 +1,4 @@
+﻿#define _CRT_SECURE_NO_WARNINGS
 #include<stdlib.h>
 #include<iostream>
 #include<fstream>
@@ -10,11 +11,18 @@
 #include<ctime>
 #include<string>
 
+// GUI
 #include"imgui.h"
 #include"imgui_impl_win32.h"
 #include"imgui_impl_dx11.h"
 #include<d3d11.h>
 #include<tchar.h>
+
+#pragma comment(lib, "OpenCL.lib")
+// Open CL
+#include <CL/cl2.hpp>
+
+//#define GPU_USE                                     //!< enable GPU for AI calculation
 
 #define hidden_layers		3						//!< number of hidden layers in neural network
 #define input_layer 		14						//!< number of input values for neural network
@@ -22,9 +30,9 @@
 #define hidden2 			16						//!< number of nodes in 2nd layer
 #define hidden3 			4						//!< number of nodes in 3rd layer
 #define output_layer		2						//!< number of output values
-#define population 			256						//!< AI population size
+#define population 			128						//!< AI population size
 #define mutation 			5						//!< chance per 1000 of random matrix field value 
-#define next_gen 			32						//!< number of best cars that will be used to create next generation
+#define next_gen 			16						//!< number of best cars that will be used to create next generation
 #define roulette_size 		2000					//!< size of an array to bias the better cars for selection in new generation
 
 #define PENDULUM_MASS		1						//!< Bottom pendulum mass in kg
@@ -51,6 +59,14 @@
 
 #define MAX_GENERATIONS     10000                   //!< Maximum number of generations that simulation will run
 
+#ifdef GPU_USE
+#define MAX_SOURCE_SIZE     0x100000                //!< Max open CL file size
+
+#define CL_HPP_TARGET_OPENCL_VERSION    200         //!< OpenCL version
+#endif // #ifdef GPU_USE
+
+#define min(a, b) (((a) < (b)) ? (a) : (b))
+
 #if population < next_gen
 #error next generation can not be greater than population
 #endif // #if population < next_gen
@@ -67,7 +83,61 @@ typedef struct GUI_parameters {
     int mutationSlider;
 } GUI_param;
 
-void stick_thread(Neural_network *nn, Stick pendulum, Stick pendulum2, Stick pendulum3, unsigned int *result, bool should_save_best);
+#ifdef GPU_USE
+typedef struct openCl_parameters {
+    cl_int ret;
+    cl_context context;
+    cl_command_queue command_queue;
+    cl_mem columns_mem_obj;
+    cl_mem inputs_mem_obj;
+    cl_mem ih1_mem_obj;
+    cl_mem b1_mem_obj;
+    cl_mem output_mem_obj;
+    cl_mem inputs_mem_obj_out;
+    cl_mem columns_mem_obj_out;
+    cl_mem ol_mem_obj;
+    cl_mem ob_mem_obj;
+    cl_mem result_mem_obj;
+#if hidden_layers > 1
+    cl_mem inputs_mem_obj2;
+    cl_mem columns_mem_obj2;
+    cl_mem hl2_mem_obj;
+    cl_mem b2_mem_obj;
+    cl_mem output_mem_obj2;
+    cl_kernel kernel2;
+    size_t global_item_size2;
+    size_t local_item_size2;
+#if hidden_layers > 2
+    cl_mem inputs_mem_obj3;
+    cl_mem columns_mem_obj3;
+    cl_mem hl3_mem_obj;
+    cl_mem b3_mem_obj;
+    cl_mem output_mem_obj3;
+    cl_kernel kernel3;
+    size_t global_item_size3;
+    size_t local_item_size3;
+#endif // #if hidden_layers > 2
+#endif // #if hidden_layers > 1
+    cl_program program;
+    cl_kernel kernel;
+    cl_kernel kernelOut;
+    size_t global_item_size;
+    size_t local_item_size;
+    size_t global_item_size_out;
+    size_t local_item_size_out;
+} openCl_param;
+#endif // #ifdef GPU_USE
+
+void stick_thread(Neural_network *nn,
+                  Stick pendulum,
+                  Stick pendulum2,
+                  Stick pendulum3,
+                  unsigned int *result,
+                  bool should_save_best
+#ifdef GPU_USE
+                  ,openCl_param *param
+#endif // #ifdef GPU_USE
+);
 void renderGUI(GUI_param *param);
 
 // Data
@@ -82,6 +152,10 @@ void CleanupDeviceD3D();
 void CreateRenderTarget();
 void CleanupRenderTarget();
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+#ifdef GPU_USE
+bool openClInit(openCl_param *param);
+#endif // #ifdef GPU_USE
 
 void main() {
     unsigned int i, best_id[next_gen], roulette[roulette_size], tc, j, results[population];
@@ -129,10 +203,19 @@ void main() {
 
     GUI_param guiParam = { false, false, 0, 0, 0, 0, mutation };
 
+#ifdef GPU_USE
+    openCl_param openClParam[population];
+#endif // #ifdef GPU_USE
+
     srand((int)time(NULL) + (int)clock());
+
+    gui_thread = thread(renderGUI, &guiParam);
 
     // create neural networks
     for(i = 0; i < population; i++) {
+#ifdef GPU_USE
+        openClInit(&openClParam[i]);
+#endif // #ifdef GPU_USE
 #if hidden_layers == 3
         nn[i] = new Neural_network(input_layer, hidden1, hidden2, hidden3, output_layer);
         temp_nn[i] = new Neural_network(input_layer, hidden1, hidden2, hidden3, output_layer);
@@ -200,9 +283,6 @@ void main() {
     pendulum3.position[eulerY] = pendulum2.position[eulerY] + pendulum2.massVector.y + pendulum3.massVector.y;
     pendulum3.position[eulerZ] = pendulum2.position[eulerZ];
 
-    gui_thread = thread(renderGUI, &guiParam);
-
-#if FIXED_POINT_TEST == 0
     // run MAX_GENERATIONS generations
     while((generation < MAX_GENERATIONS) && (!guiParam.stop)) {
         cout << "Generation " << generation + 1 << endl;
@@ -232,7 +312,16 @@ void main() {
 
         // create threads
         for(tc = 0; tc < population; tc++) {
-            multi_thread[tc] = thread(stick_thread, nn[tc], pendulum, pendulum2, pendulum3, &results[tc], false);
+            multi_thread[tc] = thread(stick_thread, nn[tc],
+                                      pendulum,
+                                      pendulum2,
+                                      pendulum3,
+                                      &results[tc],
+                                      false
+#ifdef GPU_USE
+                                      ,&openClParam[tc]
+#endif // #ifdef GPU_USE
+            );
         }
 
         // wait for all threads to finnish
@@ -398,7 +487,16 @@ void main() {
             nn[best_id[0]]->save(saveFile.c_str(), &errLocal);
 
             // repeat the run and record it this time
-            stick_thread(best_nn, pendulum, pendulum2, pendulum3, &repeat_res, true);
+            stick_thread(best_nn,
+                         pendulum,
+                         pendulum2,
+                         pendulum3,
+                         &repeat_res,
+                         true
+#ifdef GPU_USE
+                         ,&openClParam[best_id[0]]
+#endif // #ifdef GPU_USE
+            );
 
         } else {
             cout << "Best in generation: " << results[best_id[0]];
@@ -427,197 +525,32 @@ void main() {
         }
         generation++;
     } // while (generation < 1000)
-#elif FIXED_POINT_TEST == 1
-    // fixed point test
 
-    // Delete old file and create new
-    remove(unityRotation);
-    qFile.open(unityRotation);
-    remove(unityPosition);
-    pFile.open(unityPosition);
-
-    remove(unityRotation2);
-    qFile2.open(unityRotation2);
-    remove(unityPosition2);
-    pFile2.open(unityPosition2);
-
-    remove(unityRotation3);
-    qFile3.open(unityRotation3);
-    remove(unityPosition3);
-    pFile3.open(unityPosition3);
-
-    for(i = 0; i < ITERATIONS; i++) {
-        // calculate the force required to keep the base of the stick fixed
-        pForce[eulerY] = -((pendulum.massVector.conjugate().rotate(pendulum.rotation)).y + pendulum.position[eulerY]) / TIME_STEP / TIME_STEP * pendulum.mass;
-        pForce[eulerX] = -((pendulum.massVector.conjugate().rotate(pendulum.rotation)).x + pendulum.position[eulerX]) / TIME_STEP / TIME_STEP * pendulum.mass;
-        pForce[eulerZ] = -((pendulum.massVector.conjugate().rotate(pendulum.rotation)).z + pendulum.position[eulerZ]) / TIME_STEP / TIME_STEP * pendulum.mass;
-
-        // reduce the force if it is to big
-        if(pForce[eulerY] < -pendulum.mass * gravity * FORCE_CLIPOFF) {
-            pForce[eulerY] = -pendulum.mass * gravity * FORCE_CLIPOFF;
-        }
-        if(pForce[eulerY] > pendulum.mass * gravity * FORCE_CLIPOFF) {
-            pForce[eulerY] = pendulum.mass * gravity * FORCE_CLIPOFF;
-        }
-
-        if(pForce[eulerX] > pendulum.mass * gravity * FORCE_CLIPOFF) {
-            pForce[eulerX] = pendulum.mass * gravity * FORCE_CLIPOFF;
-        }
-        if(pForce[eulerX] < -pendulum.mass * gravity * FORCE_CLIPOFF) {
-            pForce[eulerX] = -pendulum.mass * gravity * FORCE_CLIPOFF;
-        }
-
-        if(pForce[eulerZ] > pendulum.mass * gravity * FORCE_CLIPOFF) {
-            pForce[eulerZ] = pendulum.mass * gravity * FORCE_CLIPOFF;
-        }
-        if(pForce[eulerZ] < -pendulum.mass * gravity * FORCE_CLIPOFF) {
-            pForce[eulerZ] = -pendulum.mass * gravity * FORCE_CLIPOFF;
-        }
-
-        // joint force 1-2
-        jointForce[eulerY] = (((pendulum.massVector.rotate(pendulum.rotation)).y + pendulum.position[eulerY]) -
-            ((pendulum2.massVector.conjugate().rotate(pendulum2.rotation)).y + pendulum2.position[eulerY]))
-            / TIME_STEP / TIME_STEP * pendulum.mass / NUM_OF_BODIES;
-        jointForce[eulerX] = (((pendulum.massVector.rotate(pendulum.rotation)).x + pendulum.position[eulerX]) -
-            ((pendulum2.massVector.conjugate().rotate(pendulum2.rotation)).x + pendulum2.position[eulerX]))
-            / TIME_STEP / TIME_STEP * pendulum.mass / NUM_OF_BODIES;
-        jointForce[eulerZ] = (((pendulum.massVector.rotate(pendulum.rotation)).z + pendulum.position[eulerZ]) -
-            ((pendulum2.massVector.conjugate().rotate(pendulum2.rotation)).z + pendulum2.position[eulerZ]))
-            / TIME_STEP / TIME_STEP * pendulum.mass / NUM_OF_BODIES;
-
-        // reduce the force if it is to big
-        if(jointForce[eulerY] < -pendulum.mass * gravity * FORCE_CLIPOFF) {
-            jointForce[eulerY] = -pendulum.mass * gravity * FORCE_CLIPOFF;
-        }
-        if(jointForce[eulerY] > pendulum.mass * gravity * FORCE_CLIPOFF) {
-            jointForce[eulerY] = pendulum.mass * gravity * FORCE_CLIPOFF;
-        }
-
-        if(jointForce[eulerX] > pendulum.mass * gravity * FORCE_CLIPOFF) {
-            jointForce[eulerX] = pendulum.mass * gravity * FORCE_CLIPOFF;
-        }
-        if(jointForce[eulerX] < -pendulum.mass * gravity * FORCE_CLIPOFF) {
-            jointForce[eulerX] = -pendulum.mass * gravity * FORCE_CLIPOFF;
-        }
-
-        if(jointForce[eulerZ] > pendulum.mass * gravity * FORCE_CLIPOFF) {
-            jointForce[eulerZ] = pendulum.mass * gravity * FORCE_CLIPOFF;
-        }
-        if(jointForce[eulerZ] < -pendulum.mass * gravity * FORCE_CLIPOFF) {
-            jointForce[eulerZ] = -pendulum.mass * gravity * FORCE_CLIPOFF;
-        }
-
-        // joint force 3-4
-        jointForce23[eulerY] = (((pendulum2.massVector.rotate(pendulum2.rotation)).y + pendulum2.position[eulerY]) -
-            ((pendulum3.massVector.conjugate().rotate(pendulum3.rotation)).y + pendulum3.position[eulerY]))
-            / TIME_STEP / TIME_STEP * pendulum2.mass / NUM_OF_BODIES;
-        jointForce23[eulerX] = (((pendulum2.massVector.rotate(pendulum2.rotation)).x + pendulum2.position[eulerX]) -
-            ((pendulum3.massVector.conjugate().rotate(pendulum3.rotation)).x + pendulum3.position[eulerX]))
-            / TIME_STEP / TIME_STEP * pendulum2.mass / NUM_OF_BODIES;
-        jointForce23[eulerZ] = (((pendulum2.massVector.rotate(pendulum2.rotation)).z + pendulum2.position[eulerZ]) -
-            ((pendulum3.massVector.conjugate().rotate(pendulum3.rotation)).z + pendulum3.position[eulerZ]))
-            / TIME_STEP / TIME_STEP * pendulum2.mass / NUM_OF_BODIES;
-
-        // reduce the force if it is to big
-        if(jointForce23[eulerY] < -pendulum2.mass * gravity * FORCE_CLIPOFF) {
-            jointForce23[eulerY] = -pendulum2.mass * gravity * FORCE_CLIPOFF;
-        }
-        if(jointForce23[eulerY] > pendulum2.mass * gravity * FORCE_CLIPOFF) {
-            jointForce23[eulerY] = pendulum2.mass * gravity * FORCE_CLIPOFF;
-        }
-
-        if(jointForce23[eulerX] > pendulum2.mass * gravity * FORCE_CLIPOFF) {
-            jointForce23[eulerX] = pendulum2.mass * gravity * FORCE_CLIPOFF;
-        }
-        if(jointForce23[eulerX] < -pendulum2.mass * gravity * FORCE_CLIPOFF) {
-            jointForce23[eulerX] = -pendulum2.mass * gravity * FORCE_CLIPOFF;
-        }
-
-        if(jointForce23[eulerZ] > pendulum2.mass * gravity * FORCE_CLIPOFF) {
-            jointForce23[eulerZ] = pendulum2.mass * gravity * FORCE_CLIPOFF;
-        }
-        if(jointForce23[eulerZ] < -pendulum2.mass * gravity * FORCE_CLIPOFF) {
-            jointForce23[eulerZ] = -pendulum2.mass * gravity * FORCE_CLIPOFF;
-        }
-
-        // calculate the stick physics
-        pendulum3.physics(jointForce23, zeroForce, TIME_STEP);
-
-        // flip the force for pendulum2 because it has opposite reaction from top one
-        jointForce23[eulerX] = -jointForce23[eulerX];
-        jointForce23[eulerY] = -jointForce23[eulerY];
-        jointForce23[eulerZ] = -jointForce23[eulerZ];
-
-        pendulum2.physics(jointForce, jointForce23, TIME_STEP);
-
-        // flip the force for bottom pendulum because it has opposite reaction from top one
-        jointForce[eulerX] = -jointForce[eulerX];
-        jointForce[eulerY] = -jointForce[eulerY];
-        jointForce[eulerZ] = -jointForce[eulerZ];
-
-        pendulum.physics(pForce, jointForce, TIME_STEP);
-
-        // Write the bottom pendulum parameters to file
-        qFile << pendulum.rotation.x;
-        qFile << "\n";
-        qFile << pendulum.rotation.y;
-        qFile << "\n";
-        qFile << pendulum.rotation.z;
-        qFile << "\n";
-        qFile << pendulum.rotation.w;
-        qFile << "\n";
-
-        pFile << pendulum.position[eulerX];
-        pFile << "\n";
-        pFile << pendulum.position[eulerY];
-        pFile << "\n";
-        pFile << pendulum.position[eulerZ];
-        pFile << "\n";
-
-        // Write the middle pendulum parameters to file
-        qFile2 << pendulum2.rotation.x;
-        qFile2 << "\n";
-        qFile2 << pendulum2.rotation.y;
-        qFile2 << "\n";
-        qFile2 << pendulum2.rotation.z;
-        qFile2 << "\n";
-        qFile2 << pendulum2.rotation.w;
-        qFile2 << "\n";
-
-        pFile2 << pendulum2.position[eulerX];
-        pFile2 << "\n";
-        pFile2 << pendulum2.position[eulerY];
-        pFile2 << "\n";
-        pFile2 << pendulum2.position[eulerZ];
-        pFile2 << "\n";
-
-        // Write the top pendulum parameters to file
-        qFile3 << pendulum3.rotation.x;
-        qFile3 << "\n";
-        qFile3 << pendulum3.rotation.y;
-        qFile3 << "\n";
-        qFile3 << pendulum3.rotation.z;
-        qFile3 << "\n";
-        qFile3 << pendulum3.rotation.w;
-        qFile3 << "\n";
-
-        pFile3 << pendulum3.position[eulerX];
-        pFile3 << "\n";
-        pFile3 << pendulum3.position[eulerY];
-        pFile3 << "\n";
-        pFile3 << pendulum3.position[eulerZ];
-        pFile3 << "\n";
-
+#ifdef GPU_USE
+    for(i = 0; i < population; i++) {
+        openClParam[i].ret = clReleaseKernel(openClParam[i].kernel);
+        openClParam[i].ret = clReleaseProgram(openClParam[i].program);
+        openClParam[i].ret = clReleaseCommandQueue(openClParam[i].command_queue);
+        openClParam[i].ret = clReleaseContext(openClParam[i].context);
     }
-#endif // #elif FIXED_POINT_TEST == 1
+#endif // #ifdef GPU_USE
 
     cout << "Done" << endl;
 
     gui_thread.join();
 }
 
-void stick_thread(Neural_network *_nn, Stick pendulum, Stick pendulum2, Stick pendulum3, unsigned int *result, bool should_save_best) {
-    Matrix inputs(input_layer, 1, false), outputs(output_layer, 1, false);
+void stick_thread(Neural_network *_nn,
+                  Stick pendulum,
+                  Stick pendulum2,
+                  Stick pendulum3,
+                  unsigned int *result,
+                  bool should_save_best
+#ifdef GPU_USE
+                  ,openCl_param *param
+#endif // #ifdef GPU_USE
+                  ) {
+    Matrix inputs(input_layer, 1, false);
     double pendulum_height = pendulum.massVector.rotate(pendulum.rotation).y;
     double pForce[eulerCount];
     double jointForce[eulerCount] = { 0, 0, 0 };
@@ -631,6 +564,13 @@ void stick_thread(Neural_network *_nn, Stick pendulum, Stick pendulum2, Stick pe
     char *unityPosition3 = "C:/repo/unity/inverted pendulum/Assets/position3.txt";
     ofstream qFile, pFile, qFile2, pFile2, qFile3, pFile3;
     float eulerRotation[eulerCount];
+#ifdef GPU_USE
+    double GPU_results[output_layer];
+    // OpenCl
+    cl_int ret = 0;
+#else
+    Matrix outputs(output_layer, 1, false);
+#endif // #ifdef GPU_USE
 
     // initialize the result
     *result = 0;
@@ -653,6 +593,35 @@ void stick_thread(Neural_network *_nn, Stick pendulum, Stick pendulum2, Stick pe
         remove(unityPosition2);
         pFile3.open(unityPosition3);
     }
+
+#ifdef GPU_USE
+    // Copying array to buffer
+    ret = clEnqueueWriteBuffer(param->command_queue, param->ih1_mem_obj, CL_TRUE, 0, input_layer * hidden1 * sizeof(double), _nn->ih1->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(param->command_queue, param->b1_mem_obj, CL_TRUE, 0, hidden1 * sizeof(double), _nn->b1->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(param->command_queue, param->columns_mem_obj, CL_TRUE, 0, sizeof(int), &(_nn->il), 0, NULL, NULL);
+#if hidden_layers > 1
+    ret = clEnqueueWriteBuffer(param->command_queue, param->hl2_mem_obj, CL_TRUE, 0, hidden1 * hidden2 * sizeof(double), _nn->h12->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(param->command_queue, param->b2_mem_obj, CL_TRUE, 0, hidden2 * sizeof(double), _nn->b2->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(param->command_queue, param->columns_mem_obj2, CL_TRUE, 0, sizeof(int), &(_nn->hl1), 0, NULL, NULL);
+#if hidden_layers > 2
+    ret = clEnqueueWriteBuffer(param->command_queue, param->hl3_mem_obj, CL_TRUE, 0, hidden2 * hidden3 * sizeof(double), _nn->h23->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(param->command_queue, param->b3_mem_obj, CL_TRUE, 0, hidden3 * sizeof(double), _nn->b3->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(param->command_queue, param->columns_mem_obj3, CL_TRUE, 0, sizeof(int), &(_nn->hl2), 0, NULL, NULL);
+
+    ret = clEnqueueWriteBuffer(param->command_queue, param->ol_mem_obj, CL_TRUE, 0, hidden3 * output_layer * sizeof(double), _nn->ho->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(param->command_queue, param->ob_mem_obj, CL_TRUE, 0, output_layer * sizeof(double), _nn->ob->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(param->command_queue, param->columns_mem_obj_out, CL_TRUE, 0, sizeof(int), &(_nn->hl3), 0, NULL, NULL);
+#else // #if hidden_layers > 2
+    ret = clEnqueueWriteBuffer(param->command_queue, param->ol_mem_obj, CL_TRUE, 0, hidden2 * output_layer * sizeof(double), _nn->ho->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(param->command_queue, param->ob_mem_obj, CL_TRUE, 0, output_layer * sizeof(double), _nn->ob->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(param->command_queue, param->columns_mem_obj_out, CL_TRUE, 0, sizeof(int), &(_nn->hl2), 0, NULL, NULL);
+#endif // #if hidden_layers > 2
+#else // #if hidden_layers > 1
+    ret = clEnqueueWriteBuffer(param->command_queue, param->ol_mem_obj, CL_TRUE, 0, hidden1 * output_layer * sizeof(double), _nn->ho->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(param->command_queue, param->ob_mem_obj, CL_TRUE, 0, output_layer * sizeof(double), _nn->ob->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(param->command_queue, param->columns_mem_obj_out, CL_TRUE, 0, sizeof(int), &(_nn->hl1), 0, NULL, NULL);
+#endif // #if hidden_layers > 1
+#endif // #ifdef GPU_USE
 
     // run until the simulation timeouts
     while(*result < SIM_TIMEOUT) {
@@ -682,11 +651,31 @@ void stick_thread(Neural_network *_nn, Stick pendulum, Stick pendulum2, Stick pe
         inputs.setel(13, 0, pendulum3.angularV[eulerZ]);
 
         // calculate the neural network output
+#ifdef GPU_USE
+        ret = clEnqueueWriteBuffer(param->command_queue, param->inputs_mem_obj, CL_TRUE, 0, input_layer * sizeof(double), inputs.matrix, 0, NULL, NULL);
+
+        ret = clEnqueueNDRangeKernel(param->command_queue, param->kernel, 1, NULL, &(param->global_item_size), &(param->local_item_size), 0, NULL, NULL);
+#if hidden_layers > 1
+        ret = clEnqueueNDRangeKernel(param->command_queue, param->kernel2, 1, NULL, &(param->global_item_size2), &(param->local_item_size2), 0, NULL, NULL);
+#if hidden_layers > 2
+        ret = clEnqueueNDRangeKernel(param->command_queue, param->kernel3, 1, NULL, &(param->global_item_size3), &(param->local_item_size3), 0, NULL, NULL);
+#endif // #if hidden_layers > 2
+#endif // #if hidden_layers > 1
+        ret = clEnqueueNDRangeKernel(param->command_queue, param->kernelOut, 1, NULL, &(param->global_item_size_out), &(param->local_item_size_out), 0, NULL, NULL);
+
+        ret = clEnqueueReadBuffer(param->command_queue, param->result_mem_obj, CL_TRUE, 0, output_layer * sizeof(double), GPU_results, 0, NULL, NULL);
+#else
         outputs.setmat(_nn->calculate(inputs));
+#endif // #ifdef GPU_USE
 
         // set the horizontal forces from network output and calculate the vertical force to support the stick
+#ifdef GPU_USE
+        pForce[eulerX] = (GPU_results[0] - 0.5) * pendulum.mass * gravity * AI_FORCE * 2;
+        pForce[eulerZ] = (GPU_results[1] - 0.5) * pendulum.mass * gravity * AI_FORCE * 2;
+#else
         pForce[eulerX] = (outputs.getel(0, 0) - 0.5) * pendulum.mass * gravity * AI_FORCE * 2;
         pForce[eulerZ] = (outputs.getel(1, 0) - 0.5) * pendulum.mass * gravity * AI_FORCE * 2;
+#endif // #ifdef GPU_USE
         pForce[eulerY] = -((pendulum.massVector.conjugate().rotate(pendulum.rotation)).y + pendulum.position[eulerY]) / TIME_STEP / TIME_STEP * pendulum.mass;
         // reduce the vertical force if it is to big
         if(pForce[eulerY] < -pendulum.mass * gravity * FORCE_CLIPOFF) {
@@ -1081,3 +1070,322 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
     return ::DefWindowProc(hWnd, msg, wParam, lParam);
 }
+
+
+#ifdef GPU_USE
+bool openClInit(openCl_param *param) {
+    FILE *fp;
+    char *source_str;
+    size_t source_size;
+
+    fp = fopen("nn.cl", "r");
+    if(!fp) {
+        fprintf(stderr, "Failed to load kernel.\n");
+        exit(1);
+    }
+    source_str = (char*)malloc(MAX_SOURCE_SIZE);
+    source_size = fread(source_str, 1, MAX_SOURCE_SIZE, fp);
+    fclose(fp);
+
+    // OPEN_CL Platform data
+    cl_platform_id platform_id = NULL;
+    cl_device_id device_id = NULL;
+    cl_uint ret_num_devices;
+    cl_uint ret_num_platforms;
+    param->ret = clGetPlatformIDs(1, &platform_id, &ret_num_platforms);
+    param->ret = clGetDeviceIDs(platform_id, CL_DEVICE_TYPE_DEFAULT, 1,
+        &device_id, &ret_num_devices);
+
+    param->context = clCreateContext(NULL, 1, &device_id, NULL, NULL, &(param->ret));
+
+    param->command_queue = clCreateCommandQueue(param->context, device_id, 0, &(param->ret));
+
+    // OPEN_CL Creating buffer memory for vectors
+    // Number of columns in hidden layer 1 matrix
+    param->columns_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        sizeof(int),
+        NULL,
+        &(param->ret));
+
+    // Neural network inputs
+    param->inputs_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        input_layer * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // hidden layer 1 matrix
+    param->ih1_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        input_layer * hidden1 * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // hidden layer 1 bias
+    param->b1_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        hidden1 * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // hidden layer 1 output
+    param->output_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_WRITE_ONLY,
+        hidden1 * sizeof(double),
+        NULL,
+        &(param->ret));
+#if hidden_layers > 1
+    // hidden layer 2 inputs
+    param->inputs_mem_obj2 = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        hidden1 * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // Number of columns in hidden layer 2 matrix
+    param->columns_mem_obj2 = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        sizeof(int),
+        NULL,
+        &(param->ret));
+
+    // hidden layer 2 matrix
+    param->hl2_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        hidden1 * hidden2 * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // hidden layer 2 bias
+    param->b2_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        hidden2 * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // hidden layer 2 output
+    param->output_mem_obj2 = clCreateBuffer(param->context,
+        CL_MEM_WRITE_ONLY,
+        hidden2 * sizeof(double),
+        NULL,
+        &(param->ret));
+#if hidden_layers > 2
+    // hidden layer 3 inputs
+    param->inputs_mem_obj3 = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        hidden2 * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // Number of columns in hidden layer 3 matrix
+    param->columns_mem_obj3 = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        sizeof(int),
+        NULL,
+        &(param->ret));
+
+    // hidden layer 3 matrix
+    param->hl3_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        hidden2 * hidden3 * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // hidden layer 3 bias
+    param->b3_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        hidden3 * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // hidden layer 3 output
+    param->output_mem_obj3 = clCreateBuffer(param->context,
+        CL_MEM_WRITE_ONLY,
+        hidden3 * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // output layer inputs
+    param->inputs_mem_obj_out = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        hidden3 * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // Number of columns in output layer matrix
+    param->columns_mem_obj_out = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        sizeof(int),
+        NULL,
+        &(param->ret));
+
+    // output layer matrix
+    param->ol_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        hidden3 * output_layer * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // output layer bias
+    param->ob_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        output_layer * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // result
+    param->result_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_WRITE_ONLY,
+        output_layer * sizeof(double),
+        NULL,
+        &(param->ret));
+#else // #if hidden_layers > 2
+    // output layer inputs
+    param->inputs_mem_obj_out = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        hidden2 * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // Number of columns in output layer matrix
+    param->columns_mem_obj_out = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        sizeof(int),
+        NULL,
+        &(param->ret));
+
+    // output layer matrix
+    param->ol_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        hidden2 * output_layer * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // output layer bias
+    param->ob_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        output_layer * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // result
+    param->result_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_WRITE_ONLY,
+        output_layer * sizeof(double),
+        NULL,
+        &(param->ret));
+#endif // #if hidden_layers > 2
+#else  // #if hidden_layers > 1
+    // output layer inputs
+    param->inputs_mem_obj_out = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        hidden1 * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // Number of columns in output layer matrix
+    param->columns_mem_obj_out = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        sizeof(int),
+        NULL,
+        &(param->ret));
+
+    // output layer matrix
+    param->ol_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        hidden1 * output_layer * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // output layer bias
+    param->ob_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_READ_ONLY,
+        output_layer * sizeof(double),
+        NULL,
+        &(param->ret));
+
+    // result
+    param->result_mem_obj = clCreateBuffer(param->context,
+        CL_MEM_WRITE_ONLY,
+        output_layer * sizeof(double),
+        NULL,
+        &(param->ret));
+#endif // #if hidden_layers > 1
+
+
+    param->program = clCreateProgramWithSource(param->context, 1, (const char **)&source_str, (const size_t *)&source_size, &(param->ret));
+
+    param->ret = clBuildProgram(param->program, 1, &device_id, NULL, NULL, NULL);
+
+
+    // kreiranje OpenCL kernela
+    param->kernel = clCreateKernel(param->program, "first_matrix", &(param->ret));
+    param->kernelOut = clCreateKernel(param->program, "middle_matrix", &(param->ret));
+
+    // argumenti kernela
+    param->ret = clSetKernelArg(param->kernel, 0, sizeof(cl_mem), (void *)&param->inputs_mem_obj);
+    param->ret = clSetKernelArg(param->kernel, 1, sizeof(cl_mem), (void *)&param->ih1_mem_obj);
+    param->ret = clSetKernelArg(param->kernel, 2, sizeof(cl_mem), (void *)&param->b1_mem_obj);
+    param->ret = clSetKernelArg(param->kernel, 3, sizeof(cl_mem), (void *)&param->columns_mem_obj);
+    param->ret = clSetKernelArg(param->kernel, 4, sizeof(cl_mem), (void *)&param->output_mem_obj);
+
+
+#if hidden_layers > 1
+    param->kernel2 = clCreateKernel(param->program, "middle_matrix", &(param->ret));
+    param->ret = clSetKernelArg(param->kernel2, 0, sizeof(cl_mem), (void *)&param->output_mem_obj);
+    param->ret = clSetKernelArg(param->kernel2, 1, sizeof(cl_mem), (void *)&param->hl2_mem_obj);
+    param->ret = clSetKernelArg(param->kernel2, 2, sizeof(cl_mem), (void *)&param->b2_mem_obj);
+    param->ret = clSetKernelArg(param->kernel2, 3, sizeof(cl_mem), (void *)&param->columns_mem_obj2);
+    param->ret = clSetKernelArg(param->kernel2, 4, sizeof(cl_mem), (void *)&param->output_mem_obj2);
+#if hidden_layers > 2
+    param->kernel3 = clCreateKernel(param->program, "middle_matrix", &(param->ret));
+    param->ret = clSetKernelArg(param->kernel3, 0, sizeof(cl_mem), (void *)&param->output_mem_obj2);
+    param->ret = clSetKernelArg(param->kernel3, 1, sizeof(cl_mem), (void *)&param->hl3_mem_obj);
+    param->ret = clSetKernelArg(param->kernel3, 2, sizeof(cl_mem), (void *)&param->b3_mem_obj);
+    param->ret = clSetKernelArg(param->kernel3, 3, sizeof(cl_mem), (void *)&param->columns_mem_obj3);
+    param->ret = clSetKernelArg(param->kernel3, 4, sizeof(cl_mem), (void *)&param->output_mem_obj3);
+
+    param->ret = clSetKernelArg(param->kernelOut, 0, sizeof(cl_mem), (void *)&param->output_mem_obj3);
+    param->ret = clSetKernelArg(param->kernelOut, 1, sizeof(cl_mem), (void *)&param->ol_mem_obj);
+    param->ret = clSetKernelArg(param->kernelOut, 2, sizeof(cl_mem), (void *)&param->ob_mem_obj);
+    param->ret = clSetKernelArg(param->kernelOut, 3, sizeof(cl_mem), (void *)&param->columns_mem_obj_out);
+    param->ret = clSetKernelArg(param->kernelOut, 4, sizeof(cl_mem), (void *)&param->result_mem_obj);
+#else // #if hidden_layers > 2
+    param->ret = clSetKernelArg(param->kernelOut, 0, sizeof(cl_mem), (void *)&param->output_mem_obj2);
+    param->ret = clSetKernelArg(param->kernelOut, 1, sizeof(cl_mem), (void *)&param->ol_mem_obj);
+    param->ret = clSetKernelArg(param->kernelOut, 2, sizeof(cl_mem), (void *)&param->ob_mem_obj);
+    param->ret = clSetKernelArg(param->kernelOut, 3, sizeof(cl_mem), (void *)&param->columns_mem_obj_out);
+    param->ret = clSetKernelArg(param->kernelOut, 4, sizeof(cl_mem), (void *)&param->result_mem_obj);
+#endif // #if hidden_layers > 2
+#else // #if hidden_layers > 1
+    param->ret = clSetKernelArg(param->kernelOut, 0, sizeof(cl_mem), (void *)&param->output_mem_obj1);
+    param->ret = clSetKernelArg(param->kernelOut, 1, sizeof(cl_mem), (void *)&param->ol_mem_obj);
+    param->ret = clSetKernelArg(param->kernelOut, 2, sizeof(cl_mem), (void *)&param->ob_mem_obj);
+    param->ret = clSetKernelArg(param->kernelOut, 3, sizeof(cl_mem), (void *)&param->columns_mem_obj_out);
+    param->ret = clSetKernelArg(param->kernelOut, 4, sizeof(cl_mem), (void *)&param->result_mem_obj);
+#endif // #if hidden_layers > 1
+#if hidden_layers == 1
+    param->ret = clSetKernelArg(param->kernel, 5, sizeof(cl_mem), (void *)&param->output_mem_obj);
+#endif // #if hidden_layers == 2
+#if hidden_layers == 2
+    param->ret = clSetKernelArg(param->kernel, 7, sizeof(cl_mem), (void *)&param->output_mem_obj);
+#endif // #if hidden_layers == 2
+#if hidden_layers == 3
+    param->ret = clSetKernelArg(param->kernel, 9, sizeof(cl_mem), (void *)&param->output_mem_obj);
+#endif // #if hidden_layers == 3
+
+    param->global_item_size = min(256, hidden1);
+    param->local_item_size = min(256, hidden1);   // 1 to 256 work items in work group
+#if hidden_layers > 1
+    param->global_item_size2 = min(256, hidden2);
+    param->local_item_size2 = min(256, hidden2);   // 1 to 256 work items in work group
+#if hidden_layers > 2
+    param->global_item_size3 = min(256, hidden3);
+    param->local_item_size3 = min(256, hidden3);   // 1 to 256 work items in work group
+#endif // #if hidden_layers > 2
+#endif // #if hidden_layers > 1
+    param->global_item_size_out = min(256, output_layer);
+    param->local_item_size_out = min(256, output_layer);   // 1 to 256 work items in work group
+}
+#endif // #ifdef GPU_USE
