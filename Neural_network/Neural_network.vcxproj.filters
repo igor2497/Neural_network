@@ -86,5 +86,43 @@
     <ClInclude Include="imgui\backends\imgui_impl_win32.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\Program Files (x86)\AMD APP SDK\3.0\include\CL\cl.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\Program Files (x86)\AMD APP SDK\3.0\include\CL\cl.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\Program Files (x86)\AMD APP SDK\3.0\include\CL\cl_d3d10.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\Program Files (x86)\AMD APP SDK\3.0\include\CL\cl_d3d11.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\Program Files (x86)\AMD APP SDK\3.0\include\CL\cl_dx9_media_sharing.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\Program Files (x86)\AMD APP SDK\3.0\include\CL\cl_ext.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\Program Files (x86)\AMD APP SDK\3.0\include\CL\cl_gl.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\Program Files (x86)\AMD APP SDK\3.0\include\CL\cl_gl_ext.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\Program Files (x86)\AMD APP SDK\3.0\include\CL\cl_platform.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\Program Files (x86)\AMD APP SDK\3.0\include\CL\cl2.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\Program Files (x86)\AMD APP SDK\3.0\include\CL\opencl.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="nn.cl">
+      <Filter>Source Files</Filter>
+    </None>
   </ItemGroup>
 </Project>
