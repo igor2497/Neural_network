@@ -3,9 +3,9 @@
 
 #define MAX_NN_LAYERS           3
 #define MAX_INPUTS              32
-#define MAX_HIDDEN_LAYER_1      64
-#define MAX_HIDDEN_LAYER_2      64
-#define MAX_HIDDEN_LAYER_3      64
+#define MAX_HIDDEN_LAYER_1      2048
+#define MAX_HIDDEN_LAYER_2      2048
+#define MAX_HIDDEN_LAYER_3      2048
 #define MAX_OUTPUTS             32
 
 using namespace std;
