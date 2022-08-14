@@ -5,6 +5,7 @@
 #include"nn.h"
 #include"quaternion.h"
 #include"stick_balancing.h"
+#include"thread_pool.h"
 #define _USE_MATH_DEFINES
 #include<math.h>
 #include<thread> 
@@ -61,7 +62,7 @@
 #ifndef BENCHMARK
 #define MAX_GENERATIONS     10000                   //!< Maximum number of generations that simulation will run
 #else
-#define MAX_GENERATIONS     10                      //!< Maximum number of generations that simulation will run
+#define MAX_GENERATIONS     100                      //!< Maximum number of generations that simulation will run
 #endif
 
 #define CPU_THREADS         8                       //!< Number of CPU threads
@@ -96,8 +97,6 @@ typedef struct GUI_parameters {
 } GUI_param;
 
 typedef struct threadParameters {
-    void *firstParamAddress;
-    unsigned int threadIndex;
     Neural_network *nn;
     Stick pendulum;
     Stick pendulum2;
@@ -107,18 +106,7 @@ typedef struct threadParameters {
 #ifdef GPU_USE
     openCl_param *gpuParam;
 #endif // #ifdef GPU_USE
-    volatile unsigned int *startedTasks;
-    volatile unsigned int *finishedTasks;
-    volatile unsigned int *startingIndex;
-    bool runOnce;
-    bool active;
 } threadParam;
-
-typedef enum PROTECTED_VARIABLES {
-    STARTED_TASK_VAR_PROTECTION = 0,
-    FINISHED_TASK_VAR_PROTECTION,
-    PROTECTED_VAR_COUNT                 //!< Number of variables protected between threads
-} PROTECTED_VAR;
 
 #ifdef GPU_USE
 typedef struct openCl_parameters {
@@ -165,6 +153,8 @@ typedef struct openCl_parameters {
 } openCl_param;
 #endif // #ifdef GPU_USE
 
+static void tasks_done_handler();
+
 void stick_thread(Neural_network *nn,
                   Stick pendulum,
                   Stick pendulum2,
@@ -180,6 +170,8 @@ void thread_pool(threadParam *param);
 
 void renderGUI(GUI_param *param);
 
+volatile bool tasksDone = false;
+
 // Data
 static ID3D11Device*            g_pd3dDevice = NULL;
 static ID3D11DeviceContext*     g_pd3dDeviceContext = NULL;
@@ -192,7 +184,6 @@ void CleanupDeviceD3D();
 void CreateRenderTarget();
 void CleanupRenderTarget();
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-std::mutex mut[PROTECTED_VAR_COUNT];
 
 #ifdef GPU_USE
 bool openClInit(openCl_param *param);
@@ -228,7 +219,6 @@ void main() {
     long int scoreSum = 0;
     float averageScore;
     int mutationTemp = mutation;
-    volatile unsigned int startedTasks = 0, finishedTasks = 0, startingIndexVal = 0;
 #ifdef BENCHMARK
     string loadFile;
 #endif // #ifdef BENCHMARK
@@ -250,7 +240,6 @@ void main() {
 
     Neural_network *nn[population], *temp_nn[population], *best_nn;
     Neural_network *loaded_nn = new Neural_network(input_layer, hidden1, hidden2, output_layer);
-    thread multi_thread[population];
     thread gui_thread;
 
     GUI_param guiParam = { false, false, 0, 0, 0, 0, mutation, false };
@@ -347,23 +336,7 @@ void main() {
     pendulum3.position[eulerY] = pendulum2.position[eulerY] + pendulum2.massVector.y + pendulum3.massVector.y;
     pendulum3.position[eulerZ] = pendulum2.position[eulerZ];
 
-    // create threads
-    for(tc = 0; tc < CPU_THREADS; tc++) {
-        /*multi_thread[tc] = thread(stick_thread, nn[tc],
-        pendulum,
-        pendulum2,
-        pendulum3,
-        &results[tc],
-        false
-        #ifdef GPU_USE
-        ,&openClParam[tc]
-        #endif // #ifdef GPU_USE
-        );*/
-        threadParameter[tc].runOnce = false;
-        threadParameter[tc].active = false;
-        multi_thread[tc] = thread(thread_pool, &threadParameter[tc]);
-        startedTasks++;
-    }
+    thread_pool_init(0, &thread_pool, threadParameter, &tasks_done_handler, population, sizeof(threadParam), &errLocal);
 
     // run MAX_GENERATIONS generations
     while((generation < MAX_GENERATIONS) && (!guiParam.stop)) {
@@ -394,13 +367,7 @@ void main() {
             best_id[i] = population;
         }
 
-        startedTasks = CPU_THREADS;
-        finishedTasks = 0;
-        startingIndexVal = 0;
-
         for(tc = 0; tc < population; tc++) {
-            threadParameter[tc].firstParamAddress = threadParameter;
-            threadParameter[tc].threadIndex = tc;
             threadParameter[tc].nn = nn[tc];
             threadParameter[tc].pendulum = pendulum;
             threadParameter[tc].pendulum2 = pendulum2;
@@ -410,16 +377,13 @@ void main() {
 #ifdef GPU_USE
             threadParameter[tc].gpuParam = &openClParam[tc];
 #endif // #ifdef GPU_USE
-            threadParameter[tc].startedTasks = &startedTasks;
-            threadParameter[tc].finishedTasks = &finishedTasks;
-            threadParameter[tc].startingIndex = &startingIndexVal;
-            threadParameter[tc].runOnce = false;
-            threadParameter[tc].active = true;
         }
+        
+        tasksDone = false;
 
-        while(finishedTasks < population) {
-            ;
-        }
+        thread_pool_start(&errLocal);
+
+        while(!tasksDone);
 
         // initialise the arrays
         for(i = 0; i < next_gen; i++) {
@@ -614,20 +578,16 @@ void main() {
 #endif // #ifdef GPU_USE
             );*/
 
-            threadParameter[0].threadIndex = 0;
-            threadParameter[0].nn = nn[best_id[0]];
-            threadParameter[0].pendulum = pendulum;
-            threadParameter[0].pendulum2 = pendulum2;
-            threadParameter[0].pendulum3 = pendulum3;
-            threadParameter[0].result = 0;
-            threadParameter[0].should_save_best = true;
+            threadParameter[best_id[0]].pendulum = pendulum;
+            threadParameter[best_id[0]].pendulum2 = pendulum2;
+            threadParameter[best_id[0]].pendulum3 = pendulum3;
+            threadParameter[best_id[0]].result = 0;
+            threadParameter[best_id[0]].should_save_best = true;
 #ifdef GPU_USE
-            threadParameter[0].gpuParam = &openClParam[best_id[0]];
+            threadParameter[best_id[0]].gpuParam = &openClParam[best_id[0]];
 #endif // #ifdef GPU_USE
-            threadParameter[0].runOnce = true;
-            threadParameter[0].active = true;
             
-            thread_pool(threadParameter);
+            thread_pool(&(threadParameter[best_id[0]]));
 
         } else {
             cout << "Best in generation: " << threadParameter[best_id[0]].result;
@@ -660,10 +620,7 @@ void main() {
         generation++;
     } // while (generation < 1000)
 
-    // wait for all threads to finnish
-    for(tc = 0; tc < CPU_THREADS; tc++) {
-        multi_thread[tc].join();
-    }
+    thread_pool_stop(&errLocal);
 
 #ifdef GPU_USE
     for(i = 0; i < population; i++) {
@@ -1017,8 +974,6 @@ void thread_pool(threadParam *threadParams) {
     char *unityPosition3 = "C:/repo/unity/inverted pendulum/Assets/position3.txt";
     ofstream qFile, pFile, qFile2, pFile2, qFile3, pFile3;
     float eulerRotation[eulerCount];
-    bool started = false;
-    //unsigned int startedTasks;
 #ifdef GPU_USE
     double GPU_results[output_layer];
     // OpenCl
@@ -1027,316 +982,291 @@ void thread_pool(threadParam *threadParams) {
     Matrix outputs(output_layer, 1, false);
 #endif // #ifdef GPU_USE
 
-    // Keep the thread alive
-    do {
-        if(threadParams->active == true) {
-            started = true;
-            // if the run is being recorded
-            if(threadParams->should_save_best) {
-                // Delete old file and create new
-                remove(unityRotation);
-                qFile.open(unityRotation);
-                remove(unityPosition);
-                pFile.open(unityPosition);
+    // if the run is being recorded
+    if(threadParams->should_save_best) {
+        // Delete old file and create new
+        remove(unityRotation);
+        qFile.open(unityRotation);
+        remove(unityPosition);
+        pFile.open(unityPosition);
 
-                remove(unityRotation2);
-                qFile2.open(unityRotation2);
-                remove(unityPosition2);
-                pFile2.open(unityPosition2);
+        remove(unityRotation2);
+        qFile2.open(unityRotation2);
+        remove(unityPosition2);
+        pFile2.open(unityPosition2);
 
-                remove(unityRotation3);
-                qFile3.open(unityRotation3);
-                remove(unityPosition2);
-                pFile3.open(unityPosition3);
-            }
+        remove(unityRotation3);
+        qFile3.open(unityRotation3);
+        remove(unityPosition2);
+        pFile3.open(unityPosition3);
+    }
 
 #ifdef GPU_USE
-            // Copying array to buffer
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->ih1_mem_obj, CL_TRUE, 0, input_layer * hidden1 * sizeof(double), threadParams->nn->ih1->matrix, 0, NULL, NULL);
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->b1_mem_obj, CL_TRUE, 0, hidden1 * sizeof(double), threadParams->nn->b1->matrix, 0, NULL, NULL);
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->columns_mem_obj, CL_TRUE, 0, sizeof(int), &(threadParams->nn->il), 0, NULL, NULL);
+    // Copying array to buffer
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->ih1_mem_obj, CL_TRUE, 0, input_layer * hidden1 * sizeof(double), threadParams->nn->ih1->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->b1_mem_obj, CL_TRUE, 0, hidden1 * sizeof(double), threadParams->nn->b1->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->columns_mem_obj, CL_TRUE, 0, sizeof(int), &(threadParams->nn->il), 0, NULL, NULL);
 #if hidden_layers > 1
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->hl2_mem_obj, CL_TRUE, 0, hidden1 * hidden2 * sizeof(double), threadParams->nn->h12->matrix, 0, NULL, NULL);
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->b2_mem_obj, CL_TRUE, 0, hidden2 * sizeof(double), threadParams->nn->b2->matrix, 0, NULL, NULL);
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->columns_mem_obj2, CL_TRUE, 0, sizeof(int), &(threadParams->nn->hl1), 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->hl2_mem_obj, CL_TRUE, 0, hidden1 * hidden2 * sizeof(double), threadParams->nn->h12->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->b2_mem_obj, CL_TRUE, 0, hidden2 * sizeof(double), threadParams->nn->b2->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->columns_mem_obj2, CL_TRUE, 0, sizeof(int), &(threadParams->nn->hl1), 0, NULL, NULL);
 #if hidden_layers > 2
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->hl3_mem_obj, CL_TRUE, 0, hidden2 * hidden3 * sizeof(double), threadParams->nn->h23->matrix, 0, NULL, NULL);
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->b3_mem_obj, CL_TRUE, 0, hidden3 * sizeof(double), threadParams->nn->b3->matrix, 0, NULL, NULL);
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->columns_mem_obj3, CL_TRUE, 0, sizeof(int), &(threadParams->nn->hl2), 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->hl3_mem_obj, CL_TRUE, 0, hidden2 * hidden3 * sizeof(double), threadParams->nn->h23->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->b3_mem_obj, CL_TRUE, 0, hidden3 * sizeof(double), threadParams->nn->b3->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->columns_mem_obj3, CL_TRUE, 0, sizeof(int), &(threadParams->nn->hl2), 0, NULL, NULL);
 
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->ol_mem_obj, CL_TRUE, 0, hidden3 * output_layer * sizeof(double), threadParams->nn->ho->matrix, 0, NULL, NULL);
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->ob_mem_obj, CL_TRUE, 0, output_layer * sizeof(double), threadParams->nn->ob->matrix, 0, NULL, NULL);
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->columns_mem_obj_out, CL_TRUE, 0, sizeof(int), &(threadParams->nn->hl3), 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->ol_mem_obj, CL_TRUE, 0, hidden3 * output_layer * sizeof(double), threadParams->nn->ho->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->ob_mem_obj, CL_TRUE, 0, output_layer * sizeof(double), threadParams->nn->ob->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->columns_mem_obj_out, CL_TRUE, 0, sizeof(int), &(threadParams->nn->hl3), 0, NULL, NULL);
 #else // #if hidden_layers > 2
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->ol_mem_obj, CL_TRUE, 0, hidden2 * output_layer * sizeof(double), threadParams->nn->ho->matrix, 0, NULL, NULL);
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->ob_mem_obj, CL_TRUE, 0, output_layer * sizeof(double), threadParams->nn->ob->matrix, 0, NULL, NULL);
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->columns_mem_obj_out, CL_TRUE, 0, sizeof(int), &(threadParams->nn->hl2), 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->ol_mem_obj, CL_TRUE, 0, hidden2 * output_layer * sizeof(double), threadParams->nn->ho->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->ob_mem_obj, CL_TRUE, 0, output_layer * sizeof(double), threadParams->nn->ob->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->columns_mem_obj_out, CL_TRUE, 0, sizeof(int), &(threadParams->nn->hl2), 0, NULL, NULL);
 #endif // #if hidden_layers > 2
 #else // #if hidden_layers > 1
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->ol_mem_obj, CL_TRUE, 0, hidden1 * output_layer * sizeof(double), threadParams->nn->ho->matrix, 0, NULL, NULL);
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->ob_mem_obj, CL_TRUE, 0, output_layer * sizeof(double), threadParams->nn->ob->matrix, 0, NULL, NULL);
-            ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->columns_mem_obj_out, CL_TRUE, 0, sizeof(int), &(threadParams->nn->hl1), 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->ol_mem_obj, CL_TRUE, 0, hidden1 * output_layer * sizeof(double), threadParams->nn->ho->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->ob_mem_obj, CL_TRUE, 0, output_layer * sizeof(double), threadParams->nn->ob->matrix, 0, NULL, NULL);
+    ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->columns_mem_obj_out, CL_TRUE, 0, sizeof(int), &(threadParams->nn->hl1), 0, NULL, NULL);
 #endif // #if hidden_layers > 1
 #endif // #ifdef GPU_USE
 
-            // run until the simulation timeouts
-            while(threadParams->result < SIM_TIMEOUT) {
-                // calculate the stick euler angle to feed it as input
-                threadParams->pendulum.rotation.quaternionToEuler(eulerRotation);
-                inputs.setel(0, 0, eulerRotation[eulerX]);
-                inputs.setel(1, 0, eulerRotation[eulerZ]);
-                // angular velocity
-                inputs.setel(2, 0, threadParams->pendulum.angularV[eulerX]);
-                inputs.setel(3, 0, threadParams->pendulum.angularV[eulerZ]);
-                // position
-                inputs.setel(4, 0, threadParams->pendulum.position[eulerX]);
-                inputs.setel(5, 0, threadParams->pendulum.position[eulerZ]);
+    // run until the simulation timeouts
+    while(threadParams->result < SIM_TIMEOUT) {
+        // calculate the stick euler angle to feed it as input
+        threadParams->pendulum.rotation.quaternionToEuler(eulerRotation);
+        inputs.setel(0, 0, eulerRotation[eulerX]);
+        inputs.setel(1, 0, eulerRotation[eulerZ]);
+        // angular velocity
+        inputs.setel(2, 0, threadParams->pendulum.angularV[eulerX]);
+        inputs.setel(3, 0, threadParams->pendulum.angularV[eulerZ]);
+        // position
+        inputs.setel(4, 0, threadParams->pendulum.position[eulerX]);
+        inputs.setel(5, 0, threadParams->pendulum.position[eulerZ]);
 
-                threadParams->pendulum2.rotation.quaternionToEuler(eulerRotation);
-                inputs.setel(6, 0, eulerRotation[eulerX]);
-                inputs.setel(7, 0, eulerRotation[eulerZ]);
+        threadParams->pendulum2.rotation.quaternionToEuler(eulerRotation);
+        inputs.setel(6, 0, eulerRotation[eulerX]);
+        inputs.setel(7, 0, eulerRotation[eulerZ]);
 
-                inputs.setel(8, 0, threadParams->pendulum2.angularV[eulerX]);
-                inputs.setel(9, 0, threadParams->pendulum2.angularV[eulerZ]);
+        inputs.setel(8, 0, threadParams->pendulum2.angularV[eulerX]);
+        inputs.setel(9, 0, threadParams->pendulum2.angularV[eulerZ]);
 
-                threadParams->pendulum3.rotation.quaternionToEuler(eulerRotation);
-                inputs.setel(10, 0, eulerRotation[eulerX]);
-                inputs.setel(11, 0, eulerRotation[eulerZ]);
+        threadParams->pendulum3.rotation.quaternionToEuler(eulerRotation);
+        inputs.setel(10, 0, eulerRotation[eulerX]);
+        inputs.setel(11, 0, eulerRotation[eulerZ]);
 
-                inputs.setel(12, 0, threadParams->pendulum3.angularV[eulerX]);
-                inputs.setel(13, 0, threadParams->pendulum3.angularV[eulerZ]);
+        inputs.setel(12, 0, threadParams->pendulum3.angularV[eulerX]);
+        inputs.setel(13, 0, threadParams->pendulum3.angularV[eulerZ]);
 
-                // calculate the neural network output
+        // calculate the neural network output
 #ifdef GPU_USE
-                ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->inputs_mem_obj, CL_TRUE, 0, input_layer * sizeof(double), inputs.matrix, 0, NULL, NULL);
+        ret = clEnqueueWriteBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->inputs_mem_obj, CL_TRUE, 0, input_layer * sizeof(double), inputs.matrix, 0, NULL, NULL);
 
-                ret = clEnqueueNDRangeKernel(threadParams->gpuParam->command_queue, threadParams->gpuParam->kernel, 1, NULL, &(threadParams->gpuParam->global_item_size), &(threadParams->gpuParam->local_item_size), 0, NULL, NULL);
+        ret = clEnqueueNDRangeKernel(threadParams->gpuParam->command_queue, threadParams->gpuParam->kernel, 1, NULL, &(threadParams->gpuParam->global_item_size), &(threadParams->gpuParam->local_item_size), 0, NULL, NULL);
 #if hidden_layers > 1
-                ret = clEnqueueNDRangeKernel(threadParams->gpuParam->command_queue, threadParams->gpuParam->kernel2, 1, NULL, &(threadParams->gpuParam->global_item_size2), &(threadParams->gpuParam->local_item_size2), 0, NULL, NULL);
+        ret = clEnqueueNDRangeKernel(threadParams->gpuParam->command_queue, threadParams->gpuParam->kernel2, 1, NULL, &(threadParams->gpuParam->global_item_size2), &(threadParams->gpuParam->local_item_size2), 0, NULL, NULL);
 #if hidden_layers > 2
-                ret = clEnqueueNDRangeKernel(threadParams->gpuParam->command_queue, threadParams->gpuParam->kernel3, 1, NULL, &(threadParams->gpuParam->global_item_size3), &(threadParams->gpuParam->local_item_size3), 0, NULL, NULL);
+        ret = clEnqueueNDRangeKernel(threadParams->gpuParam->command_queue, threadParams->gpuParam->kernel3, 1, NULL, &(threadParams->gpuParam->global_item_size3), &(threadParams->gpuParam->local_item_size3), 0, NULL, NULL);
 #endif // #if hidden_layers > 2
 #endif // #if hidden_layers > 1
-                ret = clEnqueueNDRangeKernel(threadParams->gpuParam->command_queue, threadParams->gpuParam->kernelOut, 1, NULL, &(threadParams->gpuParam->global_item_size_out), &(threadParams->gpuParam->local_item_size_out), 0, NULL, NULL);
+        ret = clEnqueueNDRangeKernel(threadParams->gpuParam->command_queue, threadParams->gpuParam->kernelOut, 1, NULL, &(threadParams->gpuParam->global_item_size_out), &(threadParams->gpuParam->local_item_size_out), 0, NULL, NULL);
 
-                ret = clEnqueueReadBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->result_mem_obj, CL_TRUE, 0, output_layer * sizeof(double), GPU_results, 0, NULL, NULL);
+        ret = clEnqueueReadBuffer(threadParams->gpuParam->command_queue, threadParams->gpuParam->result_mem_obj, CL_TRUE, 0, output_layer * sizeof(double), GPU_results, 0, NULL, NULL);
 #else
-                outputs.setmat(threadParams->nn->calculate(inputs));
+        outputs.setmat(threadParams->nn->calculate(inputs));
 #endif // #ifdef GPU_USE
 
-                // set the horizontal forces from network output and calculate the vertical force to support the stick
+        // set the horizontal forces from network output and calculate the vertical force to support the stick
 #ifdef GPU_USE
-                pForce[eulerX] = (GPU_results[0] - 0.5) * pendulum.mass * gravity * AI_FORCE * 2;
-                pForce[eulerZ] = (GPU_results[1] - 0.5) * pendulum.mass * gravity * AI_FORCE * 2;
+        pForce[eulerX] = (GPU_results[0] - 0.5) * pendulum.mass * gravity * AI_FORCE * 2;
+        pForce[eulerZ] = (GPU_results[1] - 0.5) * pendulum.mass * gravity * AI_FORCE * 2;
 #else
-                pForce[eulerX] = (outputs.getel(0, 0) - 0.5) * threadParams->pendulum.mass * gravity * AI_FORCE * 2;
-                pForce[eulerZ] = (outputs.getel(1, 0) - 0.5) * threadParams->pendulum.mass * gravity * AI_FORCE * 2;
+        pForce[eulerX] = (outputs.getel(0, 0) - 0.5) * threadParams->pendulum.mass * gravity * AI_FORCE * 2;
+        pForce[eulerZ] = (outputs.getel(1, 0) - 0.5) * threadParams->pendulum.mass * gravity * AI_FORCE * 2;
 #endif // #ifdef GPU_USE
-                pForce[eulerY] = -((threadParams->pendulum.massVector.conjugate().rotate(threadParams->pendulum.rotation)).y + threadParams->pendulum.position[eulerY]) / TIME_STEP / TIME_STEP * threadParams->pendulum.mass;
-                // reduce the vertical force if it is to big
-                if(pForce[eulerY] < -threadParams->pendulum.mass * gravity * FORCE_CLIPOFF) {
-                    pForce[eulerY] = -threadParams->pendulum.mass * gravity * FORCE_CLIPOFF;
-                }
-                if(pForce[eulerY] > threadParams->pendulum.mass * gravity * FORCE_CLIPOFF) {
-                    pForce[eulerY] = threadParams->pendulum.mass * gravity * FORCE_CLIPOFF;
-                }
-
-                // joint force 1-2
-                jointForce[eulerY] = (((threadParams->pendulum.massVector.rotate(threadParams->pendulum.rotation)).y + threadParams->pendulum.position[eulerY]) -
-                    ((threadParams->pendulum2.massVector.conjugate().rotate(threadParams->pendulum2.rotation)).y + threadParams->pendulum2.position[eulerY]))
-                    / TIME_STEP / TIME_STEP * threadParams->pendulum.mass / NUM_OF_BODIES;
-                jointForce[eulerX] = (((threadParams->pendulum.massVector.rotate(threadParams->pendulum.rotation)).x + threadParams->pendulum.position[eulerX]) -
-                    ((threadParams->pendulum2.massVector.conjugate().rotate(threadParams->pendulum2.rotation)).x + threadParams->pendulum2.position[eulerX]))
-                    / TIME_STEP / TIME_STEP * threadParams->pendulum.mass / NUM_OF_BODIES;
-                jointForce[eulerZ] = (((threadParams->pendulum.massVector.rotate(threadParams->pendulum.rotation)).z + threadParams->pendulum.position[eulerZ]) -
-                    ((threadParams->pendulum2.massVector.conjugate().rotate(threadParams->pendulum2.rotation)).z + threadParams->pendulum2.position[eulerZ]))
-                    / TIME_STEP / TIME_STEP * threadParams->pendulum.mass / NUM_OF_BODIES;
-
-                // reduce the force if it is to big
-                if(jointForce[eulerY] < -threadParams->pendulum.mass * gravity * FORCE_CLIPOFF) {
-                    jointForce[eulerY] = -threadParams->pendulum.mass * gravity * FORCE_CLIPOFF;
-                }
-                if(jointForce[eulerY] > threadParams->pendulum.mass * gravity * FORCE_CLIPOFF) {
-                    jointForce[eulerY] = threadParams->pendulum.mass * gravity * FORCE_CLIPOFF;
-                }
-
-                if(jointForce[eulerX] > threadParams->pendulum.mass * gravity * FORCE_CLIPOFF) {
-                    jointForce[eulerX] = threadParams->pendulum.mass * gravity * FORCE_CLIPOFF;
-                }
-                if(jointForce[eulerX] < -threadParams->pendulum.mass * gravity * FORCE_CLIPOFF) {
-                    jointForce[eulerX] = -threadParams->pendulum.mass * gravity * FORCE_CLIPOFF;
-                }
-
-                if(jointForce[eulerZ] > threadParams->pendulum.mass * gravity * FORCE_CLIPOFF) {
-                    jointForce[eulerZ] = threadParams->pendulum.mass * gravity * FORCE_CLIPOFF;
-                }
-                if(jointForce[eulerZ] < -threadParams->pendulum.mass * gravity * FORCE_CLIPOFF) {
-                    jointForce[eulerZ] = -threadParams->pendulum.mass * gravity * FORCE_CLIPOFF;
-                }
-
-                // joint force 3-4
-                jointForce23[eulerY] = (((threadParams->pendulum2.massVector.rotate(threadParams->pendulum2.rotation)).y + threadParams->pendulum2.position[eulerY]) -
-                    ((threadParams->pendulum3.massVector.conjugate().rotate(threadParams->pendulum3.rotation)).y + threadParams->pendulum3.position[eulerY]))
-                    / TIME_STEP / TIME_STEP * threadParams->pendulum2.mass / NUM_OF_BODIES;
-                jointForce23[eulerX] = (((threadParams->pendulum2.massVector.rotate(threadParams->pendulum2.rotation)).x + threadParams->pendulum2.position[eulerX]) -
-                    ((threadParams->pendulum3.massVector.conjugate().rotate(threadParams->pendulum3.rotation)).x + threadParams->pendulum3.position[eulerX]))
-                    / TIME_STEP / TIME_STEP * threadParams->pendulum2.mass / NUM_OF_BODIES;
-                jointForce23[eulerZ] = (((threadParams->pendulum2.massVector.rotate(threadParams->pendulum2.rotation)).z + threadParams->pendulum2.position[eulerZ]) -
-                    ((threadParams->pendulum3.massVector.conjugate().rotate(threadParams->pendulum3.rotation)).z + threadParams->pendulum3.position[eulerZ]))
-                    / TIME_STEP / TIME_STEP * threadParams->pendulum2.mass / NUM_OF_BODIES;
-
-                // reduce the force if it is to big
-                if(jointForce23[eulerY] < -threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF) {
-                    jointForce23[eulerY] = -threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF;
-                }
-                if(jointForce23[eulerY] > threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF) {
-                    jointForce23[eulerY] = threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF;
-                }
-
-                if(jointForce23[eulerX] > threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF) {
-                    jointForce23[eulerX] = threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF;
-                }
-                if(jointForce23[eulerX] < -threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF) {
-                    jointForce23[eulerX] = -threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF;
-                }
-
-                if(jointForce23[eulerZ] > threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF) {
-                    jointForce23[eulerZ] = threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF;
-                }
-                if(jointForce23[eulerZ] < -threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF) {
-                    jointForce23[eulerZ] = -threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF;
-                }
-
-                // calculate the stick physics
-                threadParams->pendulum3.physics(jointForce23, zeroForce, TIME_STEP);
-
-                // flip the force for pendulum2 because it has opposite reaction from top one
-                jointForce23[eulerX] = -jointForce23[eulerX];
-                jointForce23[eulerY] = -jointForce23[eulerY];
-                jointForce23[eulerZ] = -jointForce23[eulerZ];
-
-                threadParams->pendulum2.physics(jointForce, jointForce23, TIME_STEP);
-
-                // flip the force for bottom pendulum because it has opposite reaction from top one
-                jointForce[eulerX] = -jointForce[eulerX];
-                jointForce[eulerY] = -jointForce[eulerY];
-                jointForce[eulerZ] = -jointForce[eulerZ];
-
-                threadParams->pendulum.physics(pForce, jointForce, TIME_STEP);
-
-                // if the run is being recorded
-                if(threadParams->should_save_best) {
-                    // Write the stick parameters to file
-                    qFile << threadParams->pendulum.rotation.x;
-                    qFile << "\n";
-                    qFile << threadParams->pendulum.rotation.y;
-                    qFile << "\n";
-                    qFile << threadParams->pendulum.rotation.z;
-                    qFile << "\n";
-                    qFile << threadParams->pendulum.rotation.w;
-                    qFile << "\n";
-
-                    pFile << threadParams->pendulum.position[eulerX];
-                    pFile << "\n";
-                    pFile << threadParams->pendulum.position[eulerY];
-                    pFile << "\n";
-                    pFile << threadParams->pendulum.position[eulerZ];
-                    pFile << "\n";
-
-                    // Write the middle pendulum parameters to file
-                    qFile2 << threadParams->pendulum2.rotation.x;
-                    qFile2 << "\n";
-                    qFile2 << threadParams->pendulum2.rotation.y;
-                    qFile2 << "\n";
-                    qFile2 << threadParams->pendulum2.rotation.z;
-                    qFile2 << "\n";
-                    qFile2 << threadParams->pendulum2.rotation.w;
-                    qFile2 << "\n";
-
-                    pFile2 << threadParams->pendulum2.position[eulerX];
-                    pFile2 << "\n";
-                    pFile2 << threadParams->pendulum2.position[eulerY];
-                    pFile2 << "\n";
-                    pFile2 << threadParams->pendulum2.position[eulerZ];
-                    pFile2 << "\n";
-
-                    // Write the top pendulum parameters to file
-                    qFile3 << threadParams->pendulum3.rotation.x;
-                    qFile3 << "\n";
-                    qFile3 << threadParams->pendulum3.rotation.y;
-                    qFile3 << "\n";
-                    qFile3 << threadParams->pendulum3.rotation.z;
-                    qFile3 << "\n";
-                    qFile3 << threadParams->pendulum3.rotation.w;
-                    qFile3 << "\n";
-
-                    pFile3 << threadParams->pendulum3.position[eulerX];
-                    pFile3 << "\n";
-                    pFile3 << threadParams->pendulum3.position[eulerY];
-                    pFile3 << "\n";
-                    pFile3 << threadParams->pendulum3.position[eulerZ];
-                    pFile3 << "\n";
-                }
-
-                // Checking if stick is inside bounds
-                if((threadParams->pendulum.massVector.rotate(threadParams->pendulum.rotation).y < 0) ||
-                    (threadParams->pendulum.position[eulerX] < -BOX_SIDES) ||
-                    (threadParams->pendulum.position[eulerX] > BOX_SIDES) ||
-                    (threadParams->pendulum.position[eulerZ] < -BOX_SIDES) ||
-                    (threadParams->pendulum.position[eulerZ] > BOX_SIDES)) {
-                    // stop the simulation, stick is out of bounds
-                    break;
-                }
-                if((threadParams->pendulum2.massVector.rotate(threadParams->pendulum2.rotation).y < 0) ||
-                    (threadParams->pendulum2.position[eulerX] < -BOX_SIDES) ||
-                    (threadParams->pendulum2.position[eulerX] > BOX_SIDES) ||
-                    (threadParams->pendulum2.position[eulerZ] < -BOX_SIDES) ||
-                    (threadParams->pendulum2.position[eulerZ] > BOX_SIDES)) {
-                    // stop the simulation, stick is out of bounds
-                    break;
-                }
-                if((threadParams->pendulum3.massVector.rotate(threadParams->pendulum3.rotation).y < 0) ||
-                    (threadParams->pendulum3.position[eulerX] < -BOX_SIDES) ||
-                    (threadParams->pendulum3.position[eulerX] > BOX_SIDES) ||
-                    (threadParams->pendulum3.position[eulerZ] < -BOX_SIDES) ||
-                    (threadParams->pendulum3.position[eulerZ] > BOX_SIDES)) {
-                    // stop the simulation, stick is out of bounds
-                    break;
-                }
-
-                (threadParams->result)++;
-            }
-
-            // if the run was recorded
-            if(threadParams->should_save_best) {
-                qFile.close();
-                pFile.close();
-                qFile2.close();
-                pFile2.close();
-                qFile3.close();
-                pFile3.close();
-            }
-
-            mut[FINISHED_TASK_VAR_PROTECTION].lock();
-            (*(threadParams->finishedTasks))++;
-            mut[FINISHED_TASK_VAR_PROTECTION].unlock();
-
-            threadParams->active = false;
-        } else {
-            if(started == true) {
-                mut[STARTED_TASK_VAR_PROTECTION].lock();
-                if(*(threadParams->startedTasks) < population) {
-                    threadParams = &(((threadParam *)(threadParams->firstParamAddress))[*(threadParams->startedTasks)]);
-                    (*(threadParams->startedTasks))++;
-                } else {
-                    threadParams = &(((threadParam *)(threadParams->firstParamAddress))[*(threadParams->startingIndex)]);
-                    (*(threadParams->startingIndex))++;
-                    started = false;
-                }
-                mut[STARTED_TASK_VAR_PROTECTION].unlock();
-            }
+        pForce[eulerY] = -((threadParams->pendulum.massVector.conjugate().rotate(threadParams->pendulum.rotation)).y + threadParams->pendulum.position[eulerY]) / TIME_STEP / TIME_STEP * threadParams->pendulum.mass;
+        // reduce the vertical force if it is to big
+        if(pForce[eulerY] < -threadParams->pendulum.mass * gravity * FORCE_CLIPOFF) {
+            pForce[eulerY] = -threadParams->pendulum.mass * gravity * FORCE_CLIPOFF;
         }
-    } while (threadParams->runOnce == false);
+        if(pForce[eulerY] > threadParams->pendulum.mass * gravity * FORCE_CLIPOFF) {
+            pForce[eulerY] = threadParams->pendulum.mass * gravity * FORCE_CLIPOFF;
+        }
+
+        // joint force 1-2
+        jointForce[eulerY] = (((threadParams->pendulum.massVector.rotate(threadParams->pendulum.rotation)).y + threadParams->pendulum.position[eulerY]) -
+            ((threadParams->pendulum2.massVector.conjugate().rotate(threadParams->pendulum2.rotation)).y + threadParams->pendulum2.position[eulerY]))
+            / TIME_STEP / TIME_STEP * threadParams->pendulum.mass / NUM_OF_BODIES;
+        jointForce[eulerX] = (((threadParams->pendulum.massVector.rotate(threadParams->pendulum.rotation)).x + threadParams->pendulum.position[eulerX]) -
+            ((threadParams->pendulum2.massVector.conjugate().rotate(threadParams->pendulum2.rotation)).x + threadParams->pendulum2.position[eulerX]))
+            / TIME_STEP / TIME_STEP * threadParams->pendulum.mass / NUM_OF_BODIES;
+        jointForce[eulerZ] = (((threadParams->pendulum.massVector.rotate(threadParams->pendulum.rotation)).z + threadParams->pendulum.position[eulerZ]) -
+            ((threadParams->pendulum2.massVector.conjugate().rotate(threadParams->pendulum2.rotation)).z + threadParams->pendulum2.position[eulerZ]))
+            / TIME_STEP / TIME_STEP * threadParams->pendulum.mass / NUM_OF_BODIES;
+
+        // reduce the force if it is to big
+        if(jointForce[eulerY] < -threadParams->pendulum.mass * gravity * FORCE_CLIPOFF) {
+            jointForce[eulerY] = -threadParams->pendulum.mass * gravity * FORCE_CLIPOFF;
+        }
+        if(jointForce[eulerY] > threadParams->pendulum.mass * gravity * FORCE_CLIPOFF) {
+            jointForce[eulerY] = threadParams->pendulum.mass * gravity * FORCE_CLIPOFF;
+        }
+
+        if(jointForce[eulerX] > threadParams->pendulum.mass * gravity * FORCE_CLIPOFF) {
+            jointForce[eulerX] = threadParams->pendulum.mass * gravity * FORCE_CLIPOFF;
+        }
+        if(jointForce[eulerX] < -threadParams->pendulum.mass * gravity * FORCE_CLIPOFF) {
+            jointForce[eulerX] = -threadParams->pendulum.mass * gravity * FORCE_CLIPOFF;
+        }
+
+        if(jointForce[eulerZ] > threadParams->pendulum.mass * gravity * FORCE_CLIPOFF) {
+            jointForce[eulerZ] = threadParams->pendulum.mass * gravity * FORCE_CLIPOFF;
+        }
+        if(jointForce[eulerZ] < -threadParams->pendulum.mass * gravity * FORCE_CLIPOFF) {
+            jointForce[eulerZ] = -threadParams->pendulum.mass * gravity * FORCE_CLIPOFF;
+        }
+
+        // joint force 3-4
+        jointForce23[eulerY] = (((threadParams->pendulum2.massVector.rotate(threadParams->pendulum2.rotation)).y + threadParams->pendulum2.position[eulerY]) -
+            ((threadParams->pendulum3.massVector.conjugate().rotate(threadParams->pendulum3.rotation)).y + threadParams->pendulum3.position[eulerY]))
+            / TIME_STEP / TIME_STEP * threadParams->pendulum2.mass / NUM_OF_BODIES;
+        jointForce23[eulerX] = (((threadParams->pendulum2.massVector.rotate(threadParams->pendulum2.rotation)).x + threadParams->pendulum2.position[eulerX]) -
+            ((threadParams->pendulum3.massVector.conjugate().rotate(threadParams->pendulum3.rotation)).x + threadParams->pendulum3.position[eulerX]))
+            / TIME_STEP / TIME_STEP * threadParams->pendulum2.mass / NUM_OF_BODIES;
+        jointForce23[eulerZ] = (((threadParams->pendulum2.massVector.rotate(threadParams->pendulum2.rotation)).z + threadParams->pendulum2.position[eulerZ]) -
+            ((threadParams->pendulum3.massVector.conjugate().rotate(threadParams->pendulum3.rotation)).z + threadParams->pendulum3.position[eulerZ]))
+            / TIME_STEP / TIME_STEP * threadParams->pendulum2.mass / NUM_OF_BODIES;
+
+        // reduce the force if it is to big
+        if(jointForce23[eulerY] < -threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF) {
+            jointForce23[eulerY] = -threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF;
+        }
+        if(jointForce23[eulerY] > threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF) {
+            jointForce23[eulerY] = threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF;
+        }
+
+        if(jointForce23[eulerX] > threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF) {
+            jointForce23[eulerX] = threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF;
+        }
+        if(jointForce23[eulerX] < -threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF) {
+            jointForce23[eulerX] = -threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF;
+        }
+
+        if(jointForce23[eulerZ] > threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF) {
+            jointForce23[eulerZ] = threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF;
+        }
+        if(jointForce23[eulerZ] < -threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF) {
+            jointForce23[eulerZ] = -threadParams->pendulum2.mass * gravity * FORCE_CLIPOFF;
+        }
+
+        // calculate the stick physics
+        threadParams->pendulum3.physics(jointForce23, zeroForce, TIME_STEP);
+
+        // flip the force for pendulum2 because it has opposite reaction from top one
+        jointForce23[eulerX] = -jointForce23[eulerX];
+        jointForce23[eulerY] = -jointForce23[eulerY];
+        jointForce23[eulerZ] = -jointForce23[eulerZ];
+
+        threadParams->pendulum2.physics(jointForce, jointForce23, TIME_STEP);
+
+        // flip the force for bottom pendulum because it has opposite reaction from top one
+        jointForce[eulerX] = -jointForce[eulerX];
+        jointForce[eulerY] = -jointForce[eulerY];
+        jointForce[eulerZ] = -jointForce[eulerZ];
+
+        threadParams->pendulum.physics(pForce, jointForce, TIME_STEP);
+
+        // if the run is being recorded
+        if(threadParams->should_save_best) {
+            // Write the stick parameters to file
+            qFile << threadParams->pendulum.rotation.x;
+            qFile << "\n";
+            qFile << threadParams->pendulum.rotation.y;
+            qFile << "\n";
+            qFile << threadParams->pendulum.rotation.z;
+            qFile << "\n";
+            qFile << threadParams->pendulum.rotation.w;
+            qFile << "\n";
+
+            pFile << threadParams->pendulum.position[eulerX];
+            pFile << "\n";
+            pFile << threadParams->pendulum.position[eulerY];
+            pFile << "\n";
+            pFile << threadParams->pendulum.position[eulerZ];
+            pFile << "\n";
+
+            // Write the middle pendulum parameters to file
+            qFile2 << threadParams->pendulum2.rotation.x;
+            qFile2 << "\n";
+            qFile2 << threadParams->pendulum2.rotation.y;
+            qFile2 << "\n";
+            qFile2 << threadParams->pendulum2.rotation.z;
+            qFile2 << "\n";
+            qFile2 << threadParams->pendulum2.rotation.w;
+            qFile2 << "\n";
+
+            pFile2 << threadParams->pendulum2.position[eulerX];
+            pFile2 << "\n";
+            pFile2 << threadParams->pendulum2.position[eulerY];
+            pFile2 << "\n";
+            pFile2 << threadParams->pendulum2.position[eulerZ];
+            pFile2 << "\n";
+
+            // Write the top pendulum parameters to file
+            qFile3 << threadParams->pendulum3.rotation.x;
+            qFile3 << "\n";
+            qFile3 << threadParams->pendulum3.rotation.y;
+            qFile3 << "\n";
+            qFile3 << threadParams->pendulum3.rotation.z;
+            qFile3 << "\n";
+            qFile3 << threadParams->pendulum3.rotation.w;
+            qFile3 << "\n";
+
+            pFile3 << threadParams->pendulum3.position[eulerX];
+            pFile3 << "\n";
+            pFile3 << threadParams->pendulum3.position[eulerY];
+            pFile3 << "\n";
+            pFile3 << threadParams->pendulum3.position[eulerZ];
+            pFile3 << "\n";
+        }
+
+        // Checking if stick is inside bounds
+        if((threadParams->pendulum.massVector.rotate(threadParams->pendulum.rotation).y < 0) ||
+            (threadParams->pendulum.position[eulerX] < -BOX_SIDES) ||
+            (threadParams->pendulum.position[eulerX] > BOX_SIDES) ||
+            (threadParams->pendulum.position[eulerZ] < -BOX_SIDES) ||
+            (threadParams->pendulum.position[eulerZ] > BOX_SIDES)) {
+            // stop the simulation, stick is out of bounds
+            break;
+        }
+        if((threadParams->pendulum2.massVector.rotate(threadParams->pendulum2.rotation).y < 0) ||
+            (threadParams->pendulum2.position[eulerX] < -BOX_SIDES) ||
+            (threadParams->pendulum2.position[eulerX] > BOX_SIDES) ||
+            (threadParams->pendulum2.position[eulerZ] < -BOX_SIDES) ||
+            (threadParams->pendulum2.position[eulerZ] > BOX_SIDES)) {
+            // stop the simulation, stick is out of bounds
+            break;
+        }
+        if((threadParams->pendulum3.massVector.rotate(threadParams->pendulum3.rotation).y < 0) ||
+            (threadParams->pendulum3.position[eulerX] < -BOX_SIDES) ||
+            (threadParams->pendulum3.position[eulerX] > BOX_SIDES) ||
+            (threadParams->pendulum3.position[eulerZ] < -BOX_SIDES) ||
+            (threadParams->pendulum3.position[eulerZ] > BOX_SIDES)) {
+            // stop the simulation, stick is out of bounds
+            break;
+        }
+
+        (threadParams->result)++;
+    }
+
+    // if the run was recorded
+    if(threadParams->should_save_best) {
+        qFile.close();
+        pFile.close();
+        qFile2.close();
+        pFile2.close();
+        qFile3.close();
+        pFile3.close();
+    }
 }
 
 void renderGUI(GUI_param *param) {
@@ -1346,6 +1276,7 @@ void renderGUI(GUI_param *param) {
     float generationsAverage[MAX_GENERATIONS];
     unsigned int lastGeneration = 0;
     float sessionBest = 0;
+    ERR_E errLocal = ERR_OK;
 
     // Create application window
     ImGui_ImplWin32_EnableDpiAwareness();
@@ -1397,6 +1328,7 @@ void renderGUI(GUI_param *param) {
             if(msg.message == WM_QUIT) {
                 quitGUI = true;
                 param->stop = true;
+                thread_pool_stop(&errLocal);
             }
         }
         if(quitGUI) {
@@ -1875,3 +1807,8 @@ bool openClInit(openCl_param *param) {
     param->local_item_size_out = min(256, output_layer);   // 1 to 256 work items in work group
 }
 #endif // #ifdef GPU_USE
+
+
+static void tasks_done_handler() {
+    tasksDone = true;
+}

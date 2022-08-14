@@ -141,6 +141,7 @@
     <ClCompile Include="imgui\imgui_widgets.cpp" />
     <ClCompile Include="imgui\backends\imgui_impl_dx11.cpp" />
     <ClCompile Include="imgui\backends\imgui_impl_win32.cpp" />
+    <ClCompile Include="thread_pool.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\..\Program Files (x86)\AMD APP SDK\3.0\include\CL\cl.h" />
@@ -164,6 +165,7 @@
     <ClInclude Include="imgui\imgui_internal.h" />
     <ClInclude Include="imgui\backends\imgui_impl_dx11.h" />
     <ClInclude Include="imgui\backends\imgui_impl_win32.h" />
+    <ClInclude Include="thread_pool.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="nn.cl" />
