@@ -33,7 +33,7 @@ public:
     Neural_network(const char *fileName);
 	void clean();
 	Matrix calculate(Matrix);
-	void randomize(int mutation);
+	void randomize(int _mutation);
 	void copy(Neural_network);
 	void save(const char *fileName, ERR_E *err);
 	void load(const char *fileName, ERR_E *err);

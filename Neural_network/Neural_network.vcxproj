@@ -120,6 +120,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <AdditionalIncludeDirectories>dxgi.lib;d3dcompiler.lib;d3d11.lib;imgui/backends;imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>hidden_layers=3;input_layer=14;hidden1=32;hidden2=32;hidden3=8;output_layer=2;population=128;mutation=5;next_gen=16;roulette_size=2000;PENDULUM_MASS=1;PENDULUM2_MASS=1;PENDULUM3_MASS=1;PENDULUM_HEIGHT=1;PENDULUM_Y_POS=0.5;PENDULUM_X_ANGLE=0.01;PENDULUM_Z_ANGLE=0.01;TIME_STEP=0.005;DURATION=60;ITERATIONS=DURATION / TIME_STEP;FORCE_CLIPOFF=50;AI_FORCE=12;SIM_TIMEOUT=ITERATIONS;BOX_SIDES=10;FIXED_POINT_TEST=0;NUM_OF_BODIES=2;MAX_GENERATIONS=10000;CL_HPP_TARGET_OPENCL_VERSION=200;MAX_SOURCE_SIZE=100000;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>

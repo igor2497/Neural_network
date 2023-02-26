@@ -197,34 +197,34 @@ Matrix Neural_network::calculate(Matrix inputs) {
     }
 }
 
-void Neural_network::randomize(int mutation) {
+void Neural_network::randomize(int _mutation) {
 
     if(layers == 2) {
 
-        ih1->randomize(mutation);
-        h12->randomize(mutation);
-        ho->randomize(mutation);
-        b1->randomize(mutation);
-        b2->randomize(mutation);
-        ob->randomize(mutation);
+        ih1->randomize(_mutation);
+        h12->randomize(_mutation);
+        ho->randomize(_mutation);
+        b1->randomize(_mutation);
+        b2->randomize(_mutation);
+        ob->randomize(_mutation);
 
     } else if(layers == 3) {
 
-        ih1->randomize(mutation);
-        h12->randomize(mutation);
-        h23->randomize(mutation);
-        ho->randomize(mutation);
-        b1->randomize(mutation);
-        b2->randomize(mutation);
-        b3->randomize(mutation);
-        ob->randomize(mutation);
+        ih1->randomize(_mutation);
+        h12->randomize(_mutation);
+        h23->randomize(_mutation);
+        ho->randomize(_mutation);
+        b1->randomize(_mutation);
+        b2->randomize(_mutation);
+        b3->randomize(_mutation);
+        ob->randomize(_mutation);
 
     } else if(layers == 1) {
 
-        ih1->randomize(mutation);
-        ho->randomize(mutation);
-        b1->randomize(mutation);
-        ob->randomize(mutation);
+        ih1->randomize(_mutation);
+        ho->randomize(_mutation);
+        b1->randomize(_mutation);
+        ob->randomize(_mutation);
     }
 }
 

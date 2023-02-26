@@ -19,7 +19,7 @@ public:
 	void setel(int, int, double);
 	void setmat(Matrix);
 	void print();
-	void randomize(int mutation);
+	void randomize(int _mutation);
 };
 
 void mul(Matrix, Matrix, Matrix*);

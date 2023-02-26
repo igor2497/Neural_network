@@ -47,10 +47,10 @@ void Matrix::print() {
     std::cout << std::endl;
 }
 
-void Matrix::randomize(int mutation) {
+void Matrix::randomize(int _mutation) {
 
     for(int i = 0; i < row*col; i++) {
-        if(rand() % 1000 < mutation) {
+        if(rand() % 1000 < _mutation) {
             matrix[i] = (double)rand() / RAND_MAX * 2 - 1;
         }
     }
